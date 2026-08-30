@@ -1,0 +1,220 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id                    String   @id @default(uuid())
+  name                  String
+  email                 String   @unique
+  passwordHash          String
+  role                  String   @default("EMPLOYEE")
+  customRoleId          String?
+  title                 String
+  avatar                String
+  joiningDate           String
+  birthDate             String
+  phone                 String
+  address               String
+  teamId                String?
+  status                String   @default("OFFLINE")
+  isLoggedIn            Boolean  @default(false)
+  checkInTime           String?
+  checkOutTime          String?
+  lastActivityTimestamp BigInt?
+  documentsJson         String   @default("[]")
+  salaryJson            String   @default("{}")
+  leaveBalanceJson      String   @default("{}")
+  emergencyContactsJson String   @default("[]")
+  createdAt             DateTime @default(now())
+}
+
+model CustomRole {
+  id              String   @id @default(uuid())
+  name            String
+  description     String
+  permissionsJson String
+  createdDate     String
+}
+
+model Team {
+  id          String   @id @default(uuid())
+  name        String
+  code        String   @unique
+  leaderId    String
+  memberIds   String   // JSON string of member array
+  description String
+}
+
+model ProjectTypeMaster {
+  id          String @id @default(uuid())
+  name        String
+  code        String @unique
+  description String
+  color       String
+}
+
+model TaskTypeMaster {
+  id          String @id @default(uuid())
+  name        String
+  code        String @unique
+  description String
+  color       String
+}
+
+model Project {
+  id              String   @id @default(uuid())
+  name            String
+  description     String   @default("")
+  typeId          String
+  estimatedHours  Float    @default(0)
+  assignmentType  String   @default("TEAM") // "TEAM" or "INDIVIDUAL"
+  teamId          String?  @default("")
+  assignedUserIds String   @default("[]") // JSON string of user IDs
+  documentsJson   String   @default("[]") // JSON string of documents
+  startDate       String?  @default("")
+  endDate         String?  @default("")
+  completionDate  String?  @default("")
+  clientName      String?  @default("")
+  deadline        String?  @default("")
+  budget          Float?   @default(0)
+  status          String   @default("NOT_STARTED")
+  progress        Int      @default(0)
+}
+
+model Task {
+  id               String   @id @default(uuid())
+  title            String
+  description      String
+  projectId        String
+  typeId           String
+  priority         String   @default("MEDIUM")
+  status           String   @default("TODO")
+  assigneeId       String
+  creatorId        String
+  estimatedHours   Float
+  loggedHours      Float    @default(0)
+  startDate        String?
+  dueDate          String
+  createdAt        String
+  isTimerRunning   Boolean  @default(false)
+  activeTimerStart String?
+  worklogsJson     String   @default("[]")
+  attachmentsJson  String   @default("[]")
+  isSoftDeleted    Boolean  @default(false)
+  softDeletedBy    String?
+  softDeletedRole  String?
+}
+
+model AttendanceRecord {
+  id        String   @id @default(uuid())
+  userId    String
+  date      String
+  checkIn   String
+  checkOut  String?
+  workHours Float    @default(0)
+  isLate    Boolean  @default(false)
+  status    String   @default("PRESENT")
+  notes     String?
+}
+
+model LeaveApplication {
+  id              String   @id @default(uuid())
+  userId          String
+  userName        String
+  userRole        String
+  leaveType       String
+  startDate       String
+  endDate         String
+  days            Int
+  reason          String
+  attachmentName  String?
+  status          String   @default("PENDING")
+  appliedOn       String
+  approverId      String?
+  approverName    String?
+  rejectionReason String?
+  isSoftDeleted   Boolean  @default(false)
+  softDeletedBy   String?
+}
+
+model CompOffRequest {
+  id              String   @id @default(uuid())
+  userId          String
+  userName        String
+  workDate        String
+  hoursWorked     Float
+  reason          String
+  projectWorkedOn String
+  status          String   @default("PENDING")
+  verifiedBy      String?
+  convertedDays   Int      @default(1)
+  requestedOn     String
+}
+
+model LeaveRule {
+  id                 String   @id @default(uuid())
+  leaveType          String
+  title              String
+  maxDaysPerYear     Int
+  noticePeriodDays   Int
+  maxConsecutiveDays Int
+  allowCarryForward  Boolean  @default(true)
+  description        String
+}
+
+model CompanyEvent {
+  id          String   @id @default(uuid())
+  title       String
+  date        String
+  type        String
+  description String
+  isHoliday   Boolean  @default(false)
+}
+
+model Payslip {
+  id                   String   @id @default(uuid())
+  userId               String
+  userName             String
+  userRole             String
+  month                String
+  year                 String   @default("2026")
+  generationDate       String
+  basicSalary          Float    @default(0)
+  hra                  Float    @default(0)
+  specialAllowance     Float    @default(0)
+  daAllowance          Float    @default(0)
+  taAllowance          Float    @default(0)
+  foodAllowance        Float    @default(0)
+  grossSalary          Float    @default(0)
+  pfDeduction          Float    @default(0)
+  taxDeduction         Float    @default(0)
+  unpaidLeaveDeduction Float    @default(0)
+  profTaxDeduction     Float    @default(0)
+  netPay               Float    @default(0)
+  breakdownJson        String   @default("{}")
+  status               String   @default("PAID")
+}
+
+model SystemSettings {
+  id                                  String   @id @default("global-settings")
+  morningPunchInThreshold             String   @default("09:30 AM")
+  minDailyWorkingHours                String   @default("08:00")
+  lateArrivalFlagLimit                Int      @default(3)
+  currencySymbol                      String   @default("₹")
+  currencyCode                        String   @default("INR")
+  smtpJson                            String
+  companyInfoJson                     String
+  themeConfigJson                     String
+  payslipConfigJson                   String   @default("{}")
+  dateFormat                          String   @default("YYYY-MM-DD")
+  timeFormat                          String   @default("12 Hours (AM/PM)")
+  maxConsecutiveLeaveGroup            Int      @default(10)
+  sandwichRuleJson                    String
+  probationPaidLeaveEligibilityMonths Int      @default(6)
+  minNoticeDaysRequired               Int      @default(3)
+}
