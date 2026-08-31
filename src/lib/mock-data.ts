@@ -8,6 +8,7 @@ import {
   AttendanceRecord,
   LeaveApplication,
   CompOffRequest,
+  PaidLeaveCredit,
   LeaveRule,
   CompanyEvent,
   Payslip,
@@ -572,35 +573,50 @@ export const INITIAL_COMP_OFF_REQUESTS: CompOffRequest[] = [
   }
 ];
 
+export const INITIAL_PAID_LEAVE_CREDITS: PaidLeaveCredit[] = [
+  {
+    id: 'plc-1',
+    userId: 'user-emp-1',
+    userName: 'David Miller',
+    days: 3,
+    reason: 'Annual Performance Incentive Paid Leave Credit',
+    validFrom: '2026-08-01',
+    validTo: '2026-12-31',
+    creditedBy: 'Alex Rivera (Super Admin)',
+    creditedAt: '2026-08-01T10:00:00Z'
+  },
+  {
+    id: 'plc-2',
+    userId: 'user-emp-2',
+    userName: 'Emma Watson',
+    days: 2,
+    reason: 'Q2 Milestone Achievement Bonus Paid Leave',
+    validFrom: '2026-07-15',
+    validTo: '2026-12-31',
+    creditedBy: 'Alex Rivera (Super Admin)',
+    creditedAt: '2026-07-15T09:30:00Z'
+  }
+];
+
 export const INITIAL_LEAVE_RULES: LeaveRule[] = [
   {
     id: 'rule-1',
     leaveType: 'PAID',
     title: 'Annual Privilege Leave Policy',
-    maxDaysPerYear: 20,
-    noticePeriodDays: 3,
-    maxConsecutiveDays: 10,
-    allowCarryForward: true,
-    description: 'Requires advance application minimum 3 days prior. Senior Team Leader or HR approval mandated.'
-  },
-  {
-    id: 'rule-2',
-    leaveType: 'SICK',
-    title: 'Medical & Health Sick Leave',
-    maxDaysPerYear: 10,
-    noticePeriodDays: 0,
-    maxConsecutiveDays: 5,
+    maxDaysPerYear: 18,
+    noticePeriodDays: 5,
+    maxConsecutiveDays: 3,
     allowCarryForward: false,
-    description: 'Medical certificate required for consecutive sick leaves exceeding 2 days.'
+    description: 'Requires advance application minimum 3 days prior. This will combine SICK & CASUAL Leaves. Senior Team Leader or HR approval mandated.'
   },
   {
     id: 'rule-3',
     leaveType: 'COMP_OFF',
     title: 'Compensatory Leave Conversion Rule',
     maxDaysPerYear: 12,
-    noticePeriodDays: 1,
+    noticePeriodDays: 5,
     maxConsecutiveDays: 3,
-    allowCarryForward: true,
+    allowCarryForward: false,
     description: '8 hours of verified weekend/holiday work converts into 1 Paid Comp-Off day after HR confirmation.'
   }
 ];

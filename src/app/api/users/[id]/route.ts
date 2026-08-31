@@ -25,6 +25,7 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     if (body.leaveBalanceJson !== undefined) data.leaveBalanceJson = body.leaveBalanceJson;
     if (body.emergencyContactsJson !== undefined) data.emergencyContactsJson = body.emergencyContactsJson;
     // Allow updating core profile fields
+    if (body.email !== undefined) data.email = body.email;
     if (body.name !== undefined) data.name = body.name;
     if (body.title !== undefined) data.title = body.title;
     if (body.phone !== undefined) data.phone = body.phone;

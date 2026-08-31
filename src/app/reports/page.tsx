@@ -143,18 +143,54 @@ export default function ReportsPage() {
   const [viewWorklogTask, setViewWorklogTask] = useState<Task | null>(null);
   const [viewProjectLogs, setViewProjectLogs] = useState<Project | null>(null);
 
-  if (!currentUser) return null;
-  const isSuperAdmin = currentUser.role === 'SUPER_ADMIN';
-  const isTeamLead = currentUser.role === 'TEAM_LEADER';
+  const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
+  const isTeamLead = currentUser?.role === 'TEAM_LEADER';
+  const isRegularEmployee = currentUser?.role === 'EMPLOYEE';
 
   // Scoped Users list
   const scopedUsers = useMemo(() => {
+    if (!currentUser) return [];
     return isSuperAdmin
       ? users
       : isTeamLead
       ? users.filter(u => u.teamId === currentUser.teamId || u.id === currentUser.id)
       : users.filter(u => u.id === currentUser.id);
   }, [users, currentUser, isSuperAdmin, isTeamLead]);
+
+  // Scoped Attendance list
+  const scopedAttendance = useMemo(() => {
+    if (!currentUser) return [];
+    if (isSuperAdmin) return attendance;
+    if (isTeamLead) {
+      return attendance.filter(a => {
+        const u = users.find(x => x.id === a.userId);
+        return u?.teamId === currentUser.teamId || a.userId === currentUser.id;
+      });
+    }
+    return attendance.filter(a => a.userId === currentUser.id);
+  }, [attendance, users, currentUser, isSuperAdmin, isTeamLead]);
+
+  // Scoped Tasks list
+  const scopedTasks = useMemo(() => {
+    if (!currentUser) return [];
+    if (isSuperAdmin) return tasks.filter(t => !t.isSoftDeleted);
+    if (isTeamLead) {
+      const myTeam = teams.find(t => t.id === currentUser.teamId);
+      return tasks.filter(t => !t.isSoftDeleted && (myTeam?.memberIds?.includes(t.assigneeId) || t.assigneeId === currentUser.id));
+    }
+    return tasks.filter(t => !t.isSoftDeleted && t.assigneeId === currentUser.id);
+  }, [tasks, teams, currentUser, isSuperAdmin, isTeamLead]);
+
+  // Scoped Leave Applications list
+  const scopedLeaveApplications = useMemo(() => {
+    if (!currentUser) return [];
+    if (isSuperAdmin) return leaveApplications.filter(l => !l.isSoftDeleted);
+    if (isTeamLead) {
+      const myTeam = teams.find(t => t.id === currentUser.teamId);
+      return leaveApplications.filter(l => !l.isSoftDeleted && (myTeam?.memberIds?.includes(l.userId) || l.userId === currentUser.id));
+    }
+    return leaveApplications.filter(l => !l.isSoftDeleted && l.userId === currentUser.id);
+  }, [leaveApplications, teams, currentUser, isSuperAdmin, isTeamLead]);
 
   // Working Days & Hours Constants for the selected period
   const totalWorkingDaysInPeriod = useMemo(() => {
@@ -341,7 +377,7 @@ export default function ReportsPage() {
   // Computed Dataset for "Individual Task Report"
   // ─────────────────────────────────────────────────────────────────────────────
   const filteredIndividualTasks = useMemo(() => {
-    return tasks.filter((t) => {
+    return scopedTasks.filter((t) => {
       if (t.isSoftDeleted) return false;
 
       // Filter by Assignee Name / User
@@ -370,64 +406,74 @@ export default function ReportsPage() {
 
       return true;
     });
-  }, [tasks, taskFilterUserId, taskFilterProjectId, taskFilterTypeId, taskFilterFromDate, taskFilterToDate]);
+  }, [scopedTasks, taskFilterUserId, taskFilterProjectId, taskFilterTypeId, taskFilterFromDate, taskFilterToDate]);
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Computed Dataset for "Project Report"
   // ─────────────────────────────────────────────────────────────────────────────
   const filteredProjectsReport = useMemo(() => {
-    return projects.map((p) => {
-      // Find all tasks for this project
-      const projTasks = tasks.filter((t) => t.projectId === p.id && !t.isSoftDeleted);
-      const totalLoggedHrs = projTasks.reduce((sum, t) => sum + (Number(t.loggedHours) || 0), 0);
+    return projects
+      .filter((p) => {
+        if (isSuperAdmin) return true;
+        if (isTeamLead) return p.teamId === currentUser?.teamId || p.assignedUserIds?.includes(currentUser?.id || '');
+        // For employee: projects where employee is assigned or has tasks
+        const hasTask = tasks.some(t => t.projectId === p.id && t.assigneeId === currentUser?.id && !t.isSoftDeleted);
+        const isAssigned = p.assignedUserIds?.includes(currentUser?.id || '') || p.teamId === currentUser?.teamId;
+        return hasTask || isAssigned;
+      })
+      .map((p) => {
+        // Find tasks for this project (scoped)
+        const projTasks = scopedTasks.filter((t) => t.projectId === p.id && !t.isSoftDeleted);
+        const totalLoggedHrs = projTasks.reduce((sum, t) => sum + (Number(t.loggedHours) || 0), 0);
 
-      // Team count or user count
-      let teamCountLabel = '1 Team';
-      if (p.assignmentType === 'TEAM') {
-        const teamObj = teams.find((tm) => tm.id === p.teamId);
-        teamCountLabel = teamObj ? `${teamObj.name} (${teamObj.memberIds?.length || 0} Members)` : '1 Team';
-      } else {
-        const count = p.assignedUserIds?.length || 1;
-        teamCountLabel = `${count} Individual${count > 1 ? 's' : ''}`;
-      }
+        // Team count or user count
+        let teamCountLabel = '1 Team';
+        if (p.assignmentType === 'TEAM') {
+          const teamObj = teams.find((tm) => tm.id === p.teamId);
+          teamCountLabel = teamObj ? `${teamObj.name} (${teamObj.memberIds?.length || 0} Members)` : '1 Team';
+        } else {
+          const count = p.assignedUserIds?.length || 1;
+          teamCountLabel = `${count} Individual${count > 1 ? 's' : ''}`;
+        }
 
-      const pType = projectTypes.find((pt) => pt.id === p.typeId);
+        const pType = projectTypes.find((pt) => pt.id === p.typeId);
 
-      return {
-        project: p,
-        projectType: pType,
-        teamCountLabel,
-        totalLoggedHrs: Math.round(totalLoggedHrs * 10) / 10,
-        tasksCount: projTasks.length,
-        projTasks
-      };
-    }).filter(({ project, projectType }) => {
-      // Search when 2 or more characters typed
-      if (projFilterSearch.trim().length >= 2) {
-        const q = projFilterSearch.toLowerCase();
-        const matchName = project.name.toLowerCase().includes(q);
-        const matchType = projectType?.name?.toLowerCase().includes(q);
-        if (!matchName && !matchType) return false;
-      }
+        return {
+          project: p,
+          projectType: pType,
+          teamCountLabel,
+          totalLoggedHrs: Math.round(totalLoggedHrs * 10) / 10,
+          tasksCount: projTasks.length,
+          projTasks
+        };
+      })
+      .filter(({ project, projectType }) => {
+        // Search when 2 or more characters typed
+        if (projFilterSearch.trim().length >= 2) {
+          const q = projFilterSearch.toLowerCase();
+          const matchName = project.name.toLowerCase().includes(q);
+          const matchType = projectType?.name?.toLowerCase().includes(q);
+          if (!matchName && !matchType) return false;
+        }
 
-      // Filter by Project Type
-      if (projFilterTypeId !== 'ALL' && project.typeId !== projFilterTypeId) {
-        return false;
-      }
+        // Filter by Project Type
+        if (projFilterTypeId !== 'ALL' && project.typeId !== projFilterTypeId) {
+          return false;
+        }
 
-      // Filter by Date Duration
-      const pStart = project.startDate || '';
-      const pEnd = project.endDate || project.deadline || '';
-      if (projFilterFromDate && pStart && pStart < projFilterFromDate && (!pEnd || pEnd < projFilterFromDate)) {
-        return false;
-      }
-      if (projFilterToDate && pStart && pStart > projFilterToDate) {
-        return false;
-      }
+        // Filter by Date Duration
+        const pStart = project.startDate || '';
+        const pEnd = project.endDate || project.deadline || '';
+        if (projFilterFromDate && pStart && pStart < projFilterFromDate && (!pEnd || pEnd < projFilterFromDate)) {
+          return false;
+        }
+        if (projFilterToDate && pStart && pStart > projFilterToDate) {
+          return false;
+        }
 
-      return true;
-    });
-  }, [projects, tasks, teams, projectTypes, projFilterSearch, projFilterTypeId, projFilterFromDate, projFilterToDate]);
+        return true;
+      });
+  }, [projects, tasks, scopedTasks, teams, projectTypes, isSuperAdmin, isTeamLead, currentUser?.id, currentUser?.teamId, projFilterSearch, projFilterTypeId, projFilterFromDate, projFilterToDate]);
 
   // Target User for Active Modal
   const selectedUserTaskRecord = useMemo(() => {
@@ -479,6 +525,8 @@ export default function ReportsPage() {
   const totalActiveProjectTaskHours = useMemo(() => {
     return activeProjectTaskEntries.reduce((acc, t) => acc + (Number(t.loggedHours) || 0), 0);
   }, [activeProjectTaskEntries]);
+
+  if (!currentUser) return null;
 
   return (
     <div className="space-y-6">
@@ -641,8 +689,10 @@ export default function ReportsPage() {
 
             <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-100">
               <p className="text-[10px] font-bold text-zinc-400 uppercase tracking-wider">Staff in Scope</p>
-              <p className="text-xl font-extrabold text-zinc-900 mt-1">{scopedUsers.length} Employees</p>
-              <p className="text-[10px] text-zinc-500 mt-0.5">{isSuperAdmin ? 'Enterprise Organization' : 'Department Scope'}</p>
+              <p className="text-xl font-extrabold text-zinc-900 mt-1">
+                {isRegularEmployee ? 'My Account' : `${scopedUsers.length} Employees`}
+              </p>
+              <p className="text-[10px] text-zinc-500 mt-0.5">{isSuperAdmin ? 'Enterprise Organization' : isTeamLead ? 'Department Scope' : currentUser.name}</p>
             </div>
 
             <div className="p-3 bg-zinc-50 rounded-xl border border-zinc-100">
@@ -1028,21 +1078,33 @@ export default function ReportsPage() {
           <div className="card-clean p-4">
             <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-xs">
               {/* Member Name */}
-              <div>
-                <label className="font-bold text-zinc-700 block mb-1">Team Member</label>
-                <select
-                  value={taskFilterUserId}
-                  onChange={(e) => setTaskFilterUserId(e.target.value)}
-                  className="w-full px-3 py-2 border border-zinc-200 rounded-xl font-bold bg-zinc-50 focus:border-brand-500"
-                >
-                  <option value="ALL">All Team Members ({scopedUsers.length})</option>
-                  {scopedUsers.map((u) => (
-                    <option key={u.id} value={u.id}>
-                      {u.name} — {u.title || u.role.replace('_', ' ')}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              {!isRegularEmployee ? (
+                <div>
+                  <label className="font-bold text-zinc-700 block mb-1">Team Member</label>
+                  <select
+                    value={taskFilterUserId}
+                    onChange={(e) => setTaskFilterUserId(e.target.value)}
+                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl font-bold bg-zinc-50 focus:border-brand-500"
+                  >
+                    <option value="ALL">All Team Members ({scopedUsers.length})</option>
+                    {scopedUsers.map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.name} — {u.title || u.role.replace('_', ' ')}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              ) : (
+                <div>
+                  <label className="font-bold text-zinc-700 block mb-1">Account</label>
+                  <input
+                    type="text"
+                    disabled
+                    value={`${currentUser.name} (${currentUser.title || 'Employee'})`}
+                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl font-bold bg-zinc-100 text-zinc-700 cursor-not-allowed"
+                  />
+                </div>
+              )}
 
               {/* Duration From - To */}
               <div>
@@ -1372,7 +1434,7 @@ export default function ReportsPage() {
             <div className="border-b border-zinc-100 pb-3 flex justify-between items-center">
               <div>
                 <h3 className="font-bold text-sm text-zinc-900">Task Logged Hours Variance Report</h3>
-                <p className="text-xs text-zinc-500">Showing {tasks.length} task entries in scope</p>
+                <p className="text-xs text-zinc-500">Showing {scopedTasks.length} task entries in scope</p>
               </div>
               <span className="text-[10px] font-bold bg-zinc-100 px-2.5 py-1 rounded text-zinc-700">
                 {isSuperAdmin ? 'Enterprise Scope' : 'Scoped View'}
@@ -1391,31 +1453,37 @@ export default function ReportsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
-                {tasks.map((t) => {
-                  const proj = projects.find((p) => p.id === t.projectId);
-                  const assignee = users.find((u) => u.id === t.assigneeId);
-                  const diff = (t.loggedHours || 0) - (t.estimatedHours || 0);
+                {scopedTasks.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} className="p-6 text-center text-zinc-400">No task records found in scope.</td>
+                  </tr>
+                ) : (
+                  scopedTasks.map((t) => {
+                    const proj = projects.find((p) => p.id === t.projectId);
+                    const assignee = users.find((u) => u.id === t.assigneeId);
+                    const diff = (t.loggedHours || 0) - (t.estimatedHours || 0);
 
-                  return (
-                    <tr key={t.id} className="hover:bg-zinc-50/80">
-                      <td className="p-3 font-bold text-zinc-900">{t.title}</td>
-                      <td className="p-3 font-semibold text-zinc-700">{proj?.name || 'General Project'}</td>
-                      <td className="p-3">
-                        <p className="font-bold text-zinc-900">{assignee?.name || 'Unassigned'}</p>
-                        {assignee && (
-                          <p className="text-[10px] text-zinc-500 font-semibold">{assignee.title || assignee.role.replace('_', ' ')}</p>
-                        )}
-                      </td>
-                      <td className="p-3 text-center font-mono">{t.estimatedHours}h</td>
-                      <td className="p-3 text-center font-mono font-bold text-brand-600">{formatHoursDecimal(t.loggedHours)}</td>
-                      <td className="p-3 text-right font-mono font-bold">
-                        <span className={diff > 0 ? 'text-rose-600' : 'text-emerald-600'}>
-                          {diff > 0 ? `+${diff.toFixed(1)}h Over` : `${diff.toFixed(1)}h Under`}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
+                    return (
+                      <tr key={t.id} className="hover:bg-zinc-50/80">
+                        <td className="p-3 font-bold text-zinc-900">{t.title}</td>
+                        <td className="p-3 font-semibold text-zinc-700">{proj?.name || 'General Project'}</td>
+                        <td className="p-3">
+                          <p className="font-bold text-zinc-900">{assignee?.name || 'Unassigned'}</p>
+                          {assignee && (
+                            <p className="text-[10px] text-zinc-500 font-semibold">{assignee.title || assignee.role.replace('_', ' ')}</p>
+                          )}
+                        </td>
+                        <td className="p-3 text-center font-mono">{t.estimatedHours}h</td>
+                        <td className="p-3 text-center font-mono font-bold text-brand-600">{formatHoursDecimal(t.loggedHours)}</td>
+                        <td className="p-3 text-right font-mono font-bold">
+                          <span className={diff > 0 ? 'text-rose-600' : 'text-emerald-600'}>
+                            {diff > 0 ? `+${diff.toFixed(1)}h Over` : `${diff.toFixed(1)}h Under`}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
@@ -1449,27 +1517,33 @@ export default function ReportsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
-                {leaveApplications.filter((l) => !l.isSoftDeleted).map((l) => {
-                  const applicant = users.find((u) => u.id === l.userId);
-                  return (
-                    <tr key={l.id} className="hover:bg-zinc-50/80">
-                      <td className="p-3">
-                        <p className="font-bold text-zinc-900">{l.userName}</p>
-                        <p className="text-[10px] text-zinc-500 font-semibold">{applicant?.title || l.userRole.replace('_', ' ')}</p>
-                      </td>
-                      <td className="p-3 font-semibold text-zinc-700">{l.leaveType} LEAVE</td>
-                      <td className="p-3 text-center font-mono font-bold">{l.days} Days</td>
-                      <td className="p-3 text-zinc-600 max-w-xs truncate">{l.reason}</td>
-                      <td className="p-3 text-right">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          l.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' : l.status === 'REJECTED' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
-                        }`}>
-                          {l.status}
-                        </span>
-                      </td>
-                    </tr>
-                  );
-                })}
+                {scopedLeaveApplications.length === 0 ? (
+                  <tr>
+                    <td colSpan={5} className="p-6 text-center text-zinc-400">No leave applications found in scope.</td>
+                  </tr>
+                ) : (
+                  scopedLeaveApplications.map((l) => {
+                    const applicant = users.find((u) => u.id === l.userId);
+                    return (
+                      <tr key={l.id} className="hover:bg-zinc-50/80">
+                        <td className="p-3">
+                          <p className="font-bold text-zinc-900">{l.userName}</p>
+                          <p className="text-[10px] text-zinc-500 font-semibold">{applicant?.title || l.userRole.replace('_', ' ')}</p>
+                        </td>
+                        <td className="p-3 font-semibold text-zinc-700">{l.leaveType} LEAVE</td>
+                        <td className="p-3 text-center font-mono font-bold">{l.days} Days</td>
+                        <td className="p-3 text-zinc-600 max-w-xs truncate">{l.reason}</td>
+                        <td className="p-3 text-right">
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            l.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-800' : l.status === 'REJECTED' ? 'bg-rose-100 text-rose-800' : 'bg-amber-100 text-amber-800'
+                          }`}>
+                            {l.status}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
@@ -1505,12 +1579,12 @@ export default function ReportsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-zinc-100">
-                {attendance.filter((a) => a.isLate).length === 0 ? (
+                {scopedAttendance.filter((a) => a.isLate).length === 0 ? (
                   <tr>
                     <td colSpan={5} className="p-6 text-center text-zinc-400">No late arrival records logged.</td>
                   </tr>
                 ) : (
-                  attendance.filter((a) => a.isLate).map((a) => {
+                  scopedAttendance.filter((a) => a.isLate).map((a) => {
                     const emp = users.find((u) => u.id === a.userId);
                     return (
                       <tr key={a.id} className="hover:bg-zinc-50/80">

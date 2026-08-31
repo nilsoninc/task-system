@@ -134,6 +134,7 @@ export interface TaskWorklog {
   id: string;
   userId: string;
   userName: string;
+  date?: string;
   startTime: string;
   endTime?: string;
   durationSeconds: number;
@@ -223,6 +224,18 @@ export interface CompOffRequest {
   requestedOn: string;
 }
 
+export interface PaidLeaveCredit {
+  id: string;
+  userId: string;
+  userName: string;
+  days: number;
+  reason: string;
+  validFrom?: string;
+  validTo?: string;
+  creditedBy: string;
+  creditedAt: string;
+}
+
 export interface LeaveRule {
   id: string;
   leaveType: LeaveType;
@@ -244,7 +257,7 @@ export interface AppNotification {
   type: 'LEAVE_APPLIED' | 'LEAVE_STATUS' | 'COMP_OFF' | 'SYSTEM' | 'INFO';
   timestamp: string;
   isRead: boolean;
-  linkUrl: string;
+  linkUrl?: string;
   referenceId?: string;
 }
 

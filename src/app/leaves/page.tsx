@@ -2,7 +2,7 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import { useSystem } from '@/context/SystemContext';
-import { LeaveType, LeaveApplication, LeaveRule, CompOffRequest } from '@/lib/types';
+import { LeaveType, LeaveApplication, LeaveRule, CompOffRequest, PaidLeaveCredit } from '@/lib/types';
 import { formatDate, calculateDateDiffDays } from '@/lib/utils';
 import {
   CalendarDays,
@@ -42,6 +42,7 @@ export default function LeavesPage() {
     teams,
     leaveApplications,
     compOffRequests,
+    paidLeaveCredits,
     leaveRules,
     users,
     projects,
@@ -52,12 +53,16 @@ export default function LeavesPage() {
     softDeleteLeave,
     hardDeleteLeave,
     addPaidLeaveCredit,
+    editPaidLeaveCredit,
+    deletePaidLeaveCredit,
     submitCompOff,
     reviewCompOff,
+    editCompOff,
+    deleteCompOff,
     addLeaveRule
   } = useSystem();
 
-  const [activeTab, setActiveTab] = useState<'applications' | 'approvals' | 'comp-off' | 'rules' | 'audit'>('applications');
+  const [activeTab, setActiveTab] = useState<'applications' | 'approvals' | 'comp-off' | 'credits' | 'rules' | 'audit'>('applications');
   
   // Card Filter State (drill-down on clicking any of the top dashboard cards or URL query param)
   const [activeCardFilter, setActiveCardFilter] = useState<'TODAY' | 'THIS_WEEK' | 'NEXT_WEEK' | 'THIS_MONTH' | 'PENDING' | 'COMP_OFF' | null>(null);
@@ -99,6 +104,22 @@ export default function LeavesPage() {
   const [projectWorkedOn, setProjectWorkedOn] = useState(projects[0]?.name || 'Task System Platform');
   const [compStatus, setCompStatus] = useState<'PENDING' | 'APPROVED_BY_TL' | 'APPROVED' | 'REJECTED'>('PENDING');
 
+  // Edit Comp-Off Form States
+  const [showEditCompOffModal, setShowEditCompOffModal] = useState<CompOffRequest | null>(null);
+  const [editCompWorkDate, setEditCompWorkDate] = useState('');
+  const [editCompHours, setEditCompHours] = useState(8);
+  const [editCompDays, setEditCompDays] = useState(1);
+  const [editCompReason, setEditCompReason] = useState('');
+  const [editCompProject, setEditCompProject] = useState('');
+  const [editCompStatus, setEditCompStatus] = useState<CompOffRequest['status']>('PENDING');
+
+  // Edit Paid Leave Credit Form States
+  const [showEditCreditModal, setShowEditCreditModal] = useState<PaidLeaveCredit | null>(null);
+  const [editCreditDays, setEditCreditDays] = useState(3);
+  const [editCreditReason, setEditCreditReason] = useState('');
+  const [editCreditValidFrom, setEditCreditValidFrom] = useState('');
+  const [editCreditValidTo, setEditCreditValidTo] = useState('');
+
   // Leave Rule Form State
   const [ruleType, setRuleType] = useState<LeaveType>('PAID');
   const [ruleTitle, setRuleTitle] = useState('');
@@ -113,6 +134,7 @@ export default function LeavesPage() {
   const isSuperAdmin = currentUser.role === 'SUPER_ADMIN';
   const isHR = currentUser.role === 'ADMIN_HR';
   const isTeamLead = currentUser.role === 'TEAM_LEADER';
+  const isRegularEmployee = currentUser.role === 'EMPLOYEE';
   const isSeniorApprover = isSuperAdmin || isHR || isTeamLead;
   const isAdminOrHR = isSuperAdmin || isHR;
 
@@ -327,9 +349,36 @@ export default function LeavesPage() {
       return;
     }
 
-    const fullReason = `${creditReason} (Valid: ${formatDate(creditValidFrom)} to ${formatDate(creditValidTo)})`;
-    addPaidLeaveCredit(targetIds, Number(creditDays), fullReason);
+    addPaidLeaveCredit(targetIds, Number(creditDays), creditReason, creditValidFrom, creditValidTo);
     setShowCreditModal(false);
+  };
+
+  // Edit Comp-Off Request
+  const handleSaveEditCompOff = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!showEditCompOffModal) return;
+    editCompOff(showEditCompOffModal.id, {
+      workDate: editCompWorkDate,
+      hoursWorked: Number(editCompHours),
+      convertedDays: Number(editCompDays),
+      reason: editCompReason,
+      projectWorkedOn: editCompProject,
+      status: editCompStatus
+    });
+    setShowEditCompOffModal(null);
+  };
+
+  // Edit Paid Leave Credit
+  const handleSaveEditCredit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!showEditCreditModal) return;
+    editPaidLeaveCredit(showEditCreditModal.id, {
+      days: Number(editCreditDays),
+      reason: editCreditReason,
+      validFrom: editCreditValidFrom,
+      validTo: editCreditValidTo
+    });
+    setShowEditCreditModal(null);
   };
 
   // Submit Comp-off Extra Work
@@ -723,6 +772,18 @@ export default function LeavesPage() {
           Comp-Off Claims ({compOffRequests.length})
         </button>
 
+        {isAdminOrHR && (
+          <button
+            onClick={() => { setActiveTab('credits'); setActiveCardFilter(null); }}
+            className={`pb-3 border-b-2 cursor-pointer transition-colors flex items-center space-x-1.5 ${
+              activeTab === 'credits' ? 'border-brand-500 text-brand-600 font-extrabold' : 'border-transparent text-zinc-500 hover:text-zinc-900'
+            }`}
+          >
+            <Gift className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Credit Paid Leave Log ({paidLeaveCredits.length})</span>
+          </button>
+        )}
+
         <button
           onClick={() => { setActiveTab('rules'); setActiveCardFilter(null); }}
           className={`pb-3 border-b-2 cursor-pointer transition-colors ${
@@ -751,7 +812,7 @@ export default function LeavesPage() {
           <table className="w-full text-left text-xs">
             <thead className="bg-zinc-100 border-b border-zinc-200 text-zinc-500 font-bold uppercase tracking-wider">
               <tr>
-                <th className="p-3">Applicant Employee</th>
+                {!isRegularEmployee && <th className="p-3">Applicant Employee</th>}
                 <th className="p-3">Leave Type</th>
                 <th className="p-3">Duration & Dates</th>
                 <th className="p-3">Reason & Handover</th>
@@ -768,12 +829,14 @@ export default function LeavesPage() {
 
                 return (
                   <tr key={l.id} className="hover:bg-zinc-50/80 transition-colors">
-                    <td className="p-3 font-bold text-zinc-900">
-                      <div>
-                        <p>{l.userName}</p>
-                        <span className="text-[10px] text-zinc-400 font-normal">{l.userRole.replace('_', ' ')}</span>
-                      </div>
-                    </td>
+                    {!isRegularEmployee && (
+                      <td className="p-3 font-bold text-zinc-900">
+                        <div>
+                          <p>{l.userName}</p>
+                          <span className="text-[10px] text-zinc-400 font-normal">{l.userRole.replace('_', ' ')}</span>
+                        </div>
+                      </td>
+                    )}
                     <td className="p-3">
                       <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-zinc-200 text-zinc-800">
                         {l.leaveType}
@@ -927,7 +990,7 @@ export default function LeavesPage() {
             <table className="w-full text-left text-xs">
               <thead className="bg-zinc-100 border-b border-zinc-200 text-zinc-500 font-bold uppercase tracking-wider">
                 <tr>
-                  <th className="p-3">Employee</th>
+                  {!isRegularEmployee && <th className="p-3">Employee</th>}
                   <th className="p-3">Work Date</th>
                   <th className="p-3">Hours Worked</th>
                   <th className="p-3">Comp-Off Days</th>
@@ -946,7 +1009,7 @@ export default function LeavesPage() {
 
                   return (
                     <tr key={co.id} className="hover:bg-zinc-50/80 transition-colors">
-                      <td className="p-3 font-bold text-zinc-900">{co.userName}</td>
+                      {!isRegularEmployee && <td className="p-3 font-bold text-zinc-900">{co.userName}</td>}
                       <td className="p-3 font-semibold text-zinc-700">{formatDate(co.workDate)}</td>
                       <td className="p-3 font-mono">{co.hoursWorked} hrs</td>
                       <td className="p-3 font-bold text-emerald-700">+{co.convertedDays} Day(s)</td>
@@ -961,46 +1024,182 @@ export default function LeavesPage() {
                           {co.status === 'APPROVED_BY_TL' ? 'TL Recommended' : co.status}
                         </span>
                       </td>
-                      <td className="p-3 text-right">
-                        {canAdminApprove ? (
-                          <div className="flex items-center justify-end space-x-1">
-                            <button
-                              onClick={() => reviewCompOff(co.id, 'APPROVED')}
-                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-xs cursor-pointer shadow-2xs"
-                            >
-                              Approve
-                            </button>
-                            <button
-                              onClick={() => reviewCompOff(co.id, 'REJECTED')}
-                              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-xs cursor-pointer shadow-2xs"
-                            >
-                              Reject
-                            </button>
-                          </div>
-                        ) : canTLReview ? (
-                          <div className="flex items-center justify-end space-x-1">
-                            <button
-                              onClick={() => reviewCompOff(co.id, 'APPROVED_BY_TL')}
-                              className="px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs cursor-pointer shadow-2xs"
-                            >
-                              Recommend (TL)
-                            </button>
-                            <button
-                              onClick={() => reviewCompOff(co.id, 'REJECTED')}
-                              className="px-2.5 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-xs cursor-pointer shadow-2xs"
-                            >
-                              Reject
-                            </button>
-                          </div>
-                        ) : (
-                          <span className="text-[11px] text-zinc-400 italic">
-                            {co.verifiedBy ? `By ${co.verifiedBy}` : 'Completed'}
-                          </span>
-                        )}
+                      <td className="p-3 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end space-x-1.5">
+                          {canAdminApprove ? (
+                            <>
+                              <button
+                                onClick={() => reviewCompOff(co.id, 'APPROVED')}
+                                className="px-2 py-1 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-lg text-[11px] cursor-pointer shadow-2xs"
+                                title="Approve Comp-Off"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                onClick={() => reviewCompOff(co.id, 'REJECTED')}
+                                className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-[11px] cursor-pointer shadow-2xs"
+                                title="Reject Comp-Off"
+                              >
+                                Reject
+                              </button>
+                            </>
+                          ) : canTLReview ? (
+                            <>
+                              <button
+                                onClick={() => reviewCompOff(co.id, 'APPROVED_BY_TL')}
+                                className="px-2 py-1 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-[11px] cursor-pointer shadow-2xs"
+                                title="Recommend Comp-Off"
+                              >
+                                Recommend
+                              </button>
+                              <button
+                                onClick={() => reviewCompOff(co.id, 'REJECTED')}
+                                className="px-2 py-1 bg-rose-600 hover:bg-rose-700 text-white font-bold rounded-lg text-[11px] cursor-pointer shadow-2xs"
+                                title="Reject Comp-Off"
+                              >
+                                Reject
+                              </button>
+                            </>
+                          ) : null}
+
+                          {/* Edit & Delete Actions for Super Admin / Admin / Owner */}
+                          {(isSuperAdmin || isAdminOrHR || (co.userId === currentUser.id && isPending)) && (
+                            <>
+                              <button
+                                onClick={() => {
+                                  setEditCompWorkDate(co.workDate);
+                                  setEditCompHours(co.hoursWorked);
+                                  setEditCompDays(co.convertedDays);
+                                  setEditCompReason(co.reason);
+                                  setEditCompProject(co.projectWorkedOn);
+                                  setEditCompStatus(co.status);
+                                  setShowEditCompOffModal(co);
+                                }}
+                                className="p-1 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg cursor-pointer transition-colors"
+                                title="Edit Comp-Off Request"
+                              >
+                                <Edit className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button
+                                onClick={() => {
+                                  if (confirm(`Are you sure you want to delete the Comp-Off claim for ${co.userName} (${formatDate(co.workDate)})?`)) {
+                                    deleteCompOff(co.id);
+                                  }
+                                }}
+                                className="p-1 text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                                title="Delete Comp-Off Request"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
                       </td>
                     </tr>
                   );
                 })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: Paid Leave Credits History & Audit Log */}
+      {activeTab === 'credits' && isAdminOrHR && (
+        <div className="card-clean p-5 space-y-4">
+          <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+            <div>
+              <h3 className="font-bold text-sm text-zinc-900 flex items-center gap-2">
+                <Gift className="w-4 h-4 text-emerald-600" /> Credit Paid Leave Log & History
+              </h3>
+              <p className="text-xs text-zinc-500">
+                Audit trail of all individual and group paid leave balance credits with edit and deletion controls.
+              </p>
+            </div>
+            <button
+              onClick={() => setShowCreditModal(true)}
+              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-bold shadow-sm cursor-pointer flex items-center gap-1"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>+ Credit Paid Leave</span>
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="bg-zinc-100 border-b border-zinc-200 text-zinc-500 font-bold uppercase tracking-wider">
+                <tr>
+                  <th className="p-3">Credited Date</th>
+                  <th className="p-3">Employee</th>
+                  <th className="p-3">Days Credited</th>
+                  <th className="p-3">Reason / Incentive Details</th>
+                  <th className="p-3">Validity Window</th>
+                  <th className="p-3">Credited By</th>
+                  <th className="p-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-zinc-100">
+                {paidLeaveCredits.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="p-8 text-center text-zinc-400">
+                      No paid leave credits recorded yet.
+                    </td>
+                  </tr>
+                ) : (
+                  paidLeaveCredits.map((credit) => (
+                    <tr key={credit.id} className="hover:bg-zinc-50/80 transition-colors">
+                      <td className="p-3 font-semibold text-zinc-700 whitespace-nowrap">
+                        {formatDate(credit.creditedAt.split('T')[0])}
+                      </td>
+                      <td className="p-3 font-bold text-zinc-900 whitespace-nowrap">
+                        {credit.userName}
+                      </td>
+                      <td className="p-3 font-black text-emerald-700 whitespace-nowrap">
+                        +{credit.days} Day(s)
+                      </td>
+                      <td className="p-3 text-zinc-700 max-w-xs truncate" title={credit.reason}>
+                        {credit.reason}
+                      </td>
+                      <td className="p-3 text-zinc-500 font-mono text-[11px] whitespace-nowrap">
+                        {credit.validFrom && credit.validTo
+                          ? `${formatDate(credit.validFrom)} ➔ ${formatDate(credit.validTo)}`
+                          : 'Permanent Credit'}
+                      </td>
+                      <td className="p-3 text-zinc-600 text-[11px] whitespace-nowrap">
+                        {credit.creditedBy}
+                      </td>
+                      <td className="p-3 text-right whitespace-nowrap">
+                        <div className="flex items-center justify-end space-x-1.5">
+                          <button
+                            onClick={() => {
+                              setEditCreditDays(credit.days);
+                              setEditCreditReason(credit.reason);
+                              setEditCreditValidFrom(credit.validFrom || '');
+                              setEditCreditValidTo(credit.validTo || '');
+                              setShowEditCreditModal(credit);
+                            }}
+                            className="p-1.5 text-zinc-600 hover:text-zinc-900 hover:bg-zinc-100 rounded-lg cursor-pointer transition-colors"
+                            title="Edit Credit Details"
+                          >
+                            <Edit className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            onClick={() => {
+                              if (confirm(`Are you sure you want to delete this credit of ${credit.days} day(s) for ${credit.userName}? This will reverse the user's paid leave balance.`)) {
+                                deletePaidLeaveCredit(credit.id);
+                              }
+                            }}
+                            className="p-1.5 text-rose-600 hover:text-rose-700 hover:bg-rose-50 rounded-lg cursor-pointer transition-colors"
+                            title="Delete Credit & Reverse Balance"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
@@ -1028,24 +1227,37 @@ export default function LeavesPage() {
             )}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {leaveRules.map((rule) => (
-              <div key={rule.id} className="p-4 bg-zinc-50 border border-zinc-200 rounded-xl space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="px-2 py-0.5 bg-brand-50 text-brand-700 border border-brand-200 rounded text-[10px] font-bold uppercase">
-                    {rule.leaveType}
-                  </span>
-                  <span className="text-xs font-black text-zinc-800">{rule.maxDaysPerYear} Days/Year</span>
-                </div>
-                <h4 className="font-bold text-zinc-900 text-sm">{rule.title}</h4>
-                <p className="text-xs text-zinc-600">{rule.description}</p>
-                <div className="pt-2 border-t border-zinc-200 text-[10px] text-zinc-500 space-y-0.5">
-                  <p>• Max Consecutive Limit: <strong>{rule.maxConsecutiveDays} Days</strong></p>
-                  <p>• Advance Notice: <strong>{rule.noticePeriodDays} Days</strong></p>
-                  <p>• Carry Forward: <strong>{rule.allowCarryForward ? 'Allowed' : 'Lapsed'}</strong></p>
-                </div>
-              </div>
-            ))}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {leaveRules
+              .filter((rule) => rule.leaveType !== 'SICK' && rule.id !== 'rule-2')
+              .map((rule) => {
+                const isPaid = rule.leaveType === 'PAID';
+                const daysPerYear = isPaid
+                  ? (systemSettings.totalPaidLeavePerYear || rule.maxDaysPerYear)
+                  : rule.maxDaysPerYear;
+
+                const description = isPaid
+                  ? 'Requires advance application minimum 3 days prior. This will combine SICK & CASUAL Leaves. Senior Team Leader or HR approval mandated.'
+                  : rule.description;
+
+                return (
+                  <div key={rule.id} className="p-4 bg-zinc-50 border border-zinc-200 rounded-xl space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="px-2 py-0.5 bg-brand-50 text-brand-700 border border-brand-200 rounded text-[10px] font-bold uppercase">
+                        {rule.leaveType}
+                      </span>
+                      <span className="text-xs font-black text-zinc-800">{daysPerYear} Days/Year</span>
+                    </div>
+                    <h4 className="font-bold text-zinc-900 text-sm">{rule.title}</h4>
+                    <p className="text-xs text-zinc-600">{description}</p>
+                    <div className="pt-2 border-t border-zinc-200 text-[10px] text-zinc-500 space-y-0.5">
+                      <p>• Max Consecutive Limit: <strong>3 Days</strong></p>
+                      <p>• Advance Notice: <strong>5 Days</strong></p>
+                      <p>• Carry Forward: <strong>Not Allowed</strong></p>
+                    </div>
+                  </div>
+                );
+              })}
           </div>
         </div>
       )}
@@ -1143,11 +1355,9 @@ export default function LeavesPage() {
                   onChange={(e) => setLeaveType(e.target.value as LeaveType)}
                   className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500 bg-white font-medium"
                 >
-                  <option value="PAID">Paid Privilege Leave ({currentUser.leaveBalance.paid} Available)</option>
-                  <option value="SICK">Sick / Health Leave ({currentUser.leaveBalance.sick} Available)</option>
-                  <option value="CASUAL">Casual Leave ({currentUser.leaveBalance.casual} Available)</option>
-                  <option value="COMP_OFF">Comp-Off Overtime ({currentUser.leaveBalance.compOff} Available)</option>
-                  <option value="UNPAID">Unpaid / LOP Leave</option>
+                  <option value="PAID">Paid Leave ({currentUser.leaveBalance?.paid ?? 0} Available)</option>
+                  <option value="COMP_OFF">Comp-Off ({currentUser.leaveBalance?.compOff ?? 0} Available)</option>
+                  <option value="UNPAID">Unpaid Leave</option>
                 </select>
               </div>
 
@@ -1251,17 +1461,15 @@ export default function LeavesPage() {
 
             <form onSubmit={handleEditLeaveSubmit} className="space-y-3.5 text-xs">
               <div>
-                <label className="font-bold text-zinc-700 block mb-1">Leave Type</label>
+                <label className="font-bold text-zinc-700 block mb-1">Leave Category / Type</label>
                 <select
                   value={leaveType}
                   onChange={(e) => setLeaveType(e.target.value as LeaveType)}
                   className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500 bg-white"
                 >
-                  <option value="PAID">Paid Privilege Leave</option>
-                  <option value="SICK">Sick / Health Leave</option>
-                  <option value="CASUAL">Casual Leave</option>
-                  <option value="COMP_OFF">Comp-Off Overtime</option>
-                  <option value="UNPAID">Unpaid / LOP Leave</option>
+                  <option value="PAID">Paid Leave ({currentUser.leaveBalance?.paid ?? 0} Available)</option>
+                  <option value="COMP_OFF">Comp-Off ({currentUser.leaveBalance?.compOff ?? 0} Available)</option>
+                  <option value="UNPAID">Unpaid Leave</option>
                 </select>
               </div>
 
@@ -1679,10 +1887,9 @@ export default function LeavesPage() {
                   onChange={(e) => setRuleType(e.target.value as LeaveType)}
                   className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500 bg-white"
                 >
-                  <option value="PAID">PAID</option>
-                  <option value="SICK">SICK</option>
-                  <option value="CASUAL">CASUAL</option>
-                  <option value="COMP_OFF">COMP_OFF</option>
+                  <option value="PAID">Paid Leave</option>
+                  <option value="COMP_OFF">Comp-Off</option>
+                  <option value="UNPAID">Unpaid Leave</option>
                 </select>
               </div>
 
@@ -1776,6 +1983,218 @@ export default function LeavesPage() {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 7. Edit Comp-Off Request Modal */}
+      {showEditCompOffModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 animate-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+              <h3 className="font-bold text-base text-zinc-900 flex items-center gap-2">
+                <Edit className="w-5 h-5 text-brand-500" /> Edit Comp-Off Request
+              </h3>
+              <button onClick={() => setShowEditCompOffModal(null)} className="text-zinc-400 hover:text-zinc-600 cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditCompOff} className="space-y-3.5 text-xs">
+              <div>
+                <label className="font-bold text-zinc-700 block mb-1">Employee</label>
+                <input
+                  type="text"
+                  disabled
+                  value={showEditCompOffModal.userName}
+                  className="w-full px-3 py-2 border border-zinc-200 rounded-xl bg-zinc-100 font-bold text-zinc-700 cursor-not-allowed"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-zinc-700 block mb-1">Work Date *</label>
+                  <input
+                    type="date"
+                    required
+                    value={editCompWorkDate}
+                    onChange={(e) => setEditCompWorkDate(e.target.value)}
+                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-zinc-700 block mb-1">Hours Worked *</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={24}
+                    required
+                    value={editCompHours}
+                    onChange={(e) => {
+                      const h = Number(e.target.value);
+                      setEditCompHours(h);
+                      setEditCompDays(Math.max(1, Math.floor(h / 8)));
+                    }}
+                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-zinc-700 block mb-1">Converted Days *</label>
+                  <input
+                    type="number"
+                    step="0.5"
+                    min="0.5"
+                    required
+                    value={editCompDays}
+                    onChange={(e) => setEditCompDays(Number(e.target.value))}
+                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-zinc-700 block mb-1">Status *</label>
+                  <select
+                    value={editCompStatus}
+                    onChange={(e) => setEditCompStatus(e.target.value as CompOffRequest['status'])}
+                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500 bg-white font-bold"
+                  >
+                    <option value="PENDING">PENDING</option>
+                    <option value="APPROVED_BY_TL">APPROVED_BY_TL</option>
+                    <option value="APPROVED">APPROVED</option>
+                    <option value="REJECTED">REJECTED</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-zinc-700 block mb-1">Project Worked On *</label>
+                <input
+                  type="text"
+                  required
+                  value={editCompProject}
+                  onChange={(e) => setEditCompProject(e.target.value)}
+                  className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-zinc-700 block mb-1">Reason / Comments *</label>
+                <textarea
+                  rows={2}
+                  required
+                  value={editCompReason}
+                  onChange={(e) => setEditCompReason(e.target.value)}
+                  className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-zinc-100 flex justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEditCompOffModal(null)}
+                  className="px-4 py-2 text-zinc-600 hover:bg-zinc-100 rounded-xl font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white font-bold rounded-xl shadow-glow-orange cursor-pointer"
+                >
+                  Save Changes
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* 8. Edit Paid Leave Credit Modal */}
+      {showEditCreditModal && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl space-y-4 animate-in zoom-in-95">
+            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
+              <h3 className="font-bold text-base text-zinc-900 flex items-center gap-2">
+                <Edit className="w-5 h-5 text-emerald-600" /> Edit Paid Leave Credit
+              </h3>
+              <button onClick={() => setShowEditCreditModal(null)} className="text-zinc-400 hover:text-zinc-600 cursor-pointer">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <form onSubmit={handleSaveEditCredit} className="space-y-3.5 text-xs">
+              <div>
+                <label className="font-bold text-zinc-700 block mb-1">Employee</label>
+                <input
+                  type="text"
+                  disabled
+                  value={showEditCreditModal.userName}
+                  className="w-full px-3 py-2 border border-zinc-200 rounded-xl bg-zinc-100 font-bold text-zinc-700 cursor-not-allowed"
+                />
+              </div>
+
+              <div>
+                <label className="font-bold text-zinc-700 block mb-1">Days Credited *</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={60}
+                  required
+                  value={editCreditDays}
+                  onChange={(e) => setEditCreditDays(Number(e.target.value))}
+                  className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-emerald-500 font-bold"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="font-bold text-zinc-700 block mb-1">Valid From</label>
+                  <input
+                    type="date"
+                    value={editCreditValidFrom}
+                    onChange={(e) => setEditCreditValidFrom(e.target.value)}
+                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-emerald-500"
+                  />
+                </div>
+                <div>
+                  <label className="font-bold text-zinc-700 block mb-1">Valid To</label>
+                  <input
+                    type="date"
+                    value={editCreditValidTo}
+                    onChange={(e) => setEditCreditValidTo(e.target.value)}
+                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-emerald-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="font-bold text-zinc-700 block mb-1">Reason / Incentive Details *</label>
+                <textarea
+                  rows={2}
+                  required
+                  value={editCreditReason}
+                  onChange={(e) => setEditCreditReason(e.target.value)}
+                  className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-emerald-500"
+                />
+              </div>
+
+              <div className="pt-3 border-t border-zinc-100 flex justify-end space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setShowEditCreditModal(null)}
+                  className="px-4 py-2 text-zinc-600 hover:bg-zinc-100 rounded-xl font-bold cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl shadow-sm cursor-pointer"
+                >
+                  Save Credit Changes
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -96,14 +96,12 @@ export default function TeamsPage() {
   const [activeTeamForLeader, setActiveTeamForLeader] = useState<Team | null>(null);
   const [leaderSearchQuery, setLeaderSearchQuery] = useState('');
 
-  if (!currentUser) return null;
+  const isAdminOrHR = currentUser?.role === 'SUPER_ADMIN' || currentUser?.role === 'ADMIN_HR';
+  const isSuperAdmin = currentUser?.role === 'SUPER_ADMIN';
+  const isTeamLeader = currentUser?.role === 'TEAM_LEADER';
 
-  const isAdminOrHR = currentUser.role === 'SUPER_ADMIN' || currentUser.role === 'ADMIN_HR';
-  const isSuperAdmin = currentUser.role === 'SUPER_ADMIN';
-  const isTeamLeader = currentUser.role === 'TEAM_LEADER';
-
-  const visibleTeams = isAdminOrHR ? teams : (isTeamLeader ? teams.filter(t => t.leaderId === currentUser.id) : []);
-  const visibleUsers = isAdminOrHR ? users : (isTeamLeader ? users.filter(u => myTeamMemberIds.includes(u.id) || u.id === currentUser.id) : []);
+  const visibleTeams = isAdminOrHR ? teams : (isTeamLeader && currentUser ? teams.filter(t => t.leaderId === currentUser.id) : []);
+  const visibleUsers = isAdminOrHR ? users : (isTeamLeader && currentUser ? users.filter(u => myTeamMemberIds.includes(u.id) || u.id === currentUser.id) : []);
 
   // Update selectedUser reference when users state changes
   const activeUser = selectedUser ? users.find(u => u.id === selectedUser.id) || selectedUser : null;
@@ -185,7 +183,7 @@ export default function TeamsPage() {
         url: docUrl || 'https://example.com/documents/doc-sample.pdf',
         status: docStatus,
         notes: docNotes,
-        verifiedBy: docStatus === 'VERIFIED' ? currentUser.name : undefined
+        verifiedBy: docStatus === 'VERIFIED' ? (currentUser?.name || 'Admin') : undefined
       });
     } else {
       addDocument(activeUser.id, {
@@ -194,7 +192,7 @@ export default function TeamsPage() {
         url: docUrl || 'https://example.com/documents/doc-sample.pdf',
         status: docStatus,
         notes: docNotes,
-        verifiedBy: docStatus === 'VERIFIED' ? currentUser.name : undefined
+        verifiedBy: docStatus === 'VERIFIED' ? (currentUser?.name || 'Admin') : undefined
       });
     }
 
@@ -287,6 +285,8 @@ export default function TeamsPage() {
       u.role.toLowerCase().includes(query)
     );
   }, [users, activeTeamForLeader, leaderSearchQuery]);
+
+  if (!currentUser) return null;
 
   return (
     <div className="space-y-6">

@@ -7,6 +7,7 @@ import { formatHoursDecimal, formatDate } from '@/lib/utils';
 import { SearchableSelect } from '@/components/common/SearchableSelect';
 import { TaskDetailsModal } from '@/components/modals/TaskDetailsModal';
 import { TaskEditModal } from '@/components/modals/TaskEditModal';
+import { TaskWorklogModal } from '@/components/modals/TaskWorklogModal';
 import {
   CheckSquare,
   Plus,
@@ -27,7 +28,9 @@ import {
   Calendar,
   FileText,
   Upload,
-  AlertTriangle
+  AlertTriangle,
+  LogIn,
+  FolderKanban
 } from 'lucide-react';
 
 export default function TasksPage() {
@@ -45,7 +48,9 @@ export default function TasksPage() {
     updateTaskStatus,
     toggleTaskTimer,
     restoreTask,
-    hardDeleteTask
+    hardDeleteTask,
+    isCheckedIn,
+    toggleCheckIn
   } = useSystem();
 
   const [viewMode, setViewMode] = useState<'kanban' | 'list'>('kanban');
@@ -60,8 +65,10 @@ export default function TasksPage() {
 
   // Modals & Selection State
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showCheckInAlert, setShowCheckInAlert] = useState(false);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [editingTask, setEditingTask] = useState<Task | null>(null);
+  const [worklogTask, setWorklogTask] = useState<Task | null>(null);
 
   // Form State for Creating Task
   const [newTitle, setNewTitle] = useState('');
@@ -83,6 +90,10 @@ export default function TasksPage() {
   const isSuperAdmin = currentUser.role === 'SUPER_ADMIN';
   const isAdminOrHR = currentUser.role === 'SUPER_ADMIN' || currentUser.role === 'ADMIN_HR';
   const isTeamLead = currentUser.role === 'TEAM_LEADER';
+  const isRegularEmployee = currentUser.role === 'EMPLOYEE';
+
+  // Any running timer in system
+  const runningTaskId = tasks.find(t => t.isTimerRunning)?.id;
 
   // Deleted tasks count (for Super Admin / TL tab)
   const deletedTasks = tasks.filter((t) => t.isSoftDeleted);
@@ -101,9 +112,9 @@ export default function TasksPage() {
   const filteredTasks = visibleTasks.filter((t) => {
     if (filterProject !== 'ALL' && t.projectId !== filterProject) return false;
     if (filterType !== 'ALL' && t.typeId !== filterType) return false;
-    if (filterAssignee !== 'ALL' && t.assigneeId !== filterAssignee) return false;
+    if (!isRegularEmployee && filterAssignee !== 'ALL' && t.assigneeId !== filterAssignee) return false;
     if (filterPriority !== 'ALL' && t.priority !== filterPriority) return false;
-    if (filterTeam !== 'ALL') {
+    if (!isRegularEmployee && filterTeam !== 'ALL') {
       const selectedTeam = teams.find((tm) => tm.id === filterTeam);
       if (selectedTeam) {
         const teamUserIds = Array.from(new Set([...(selectedTeam.memberIds || []), selectedTeam.leaderId]));
@@ -121,6 +132,23 @@ export default function TasksPage() {
     return a.dueDate.localeCompare(b.dueDate);
   });
 
+  const handleStartStopClick = (taskId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!isCheckedIn && currentUser.role !== 'SUPER_ADMIN') {
+      setShowCheckInAlert(true);
+      return;
+    }
+    toggleTaskTimer(taskId);
+  };
+
+  const handleOpenCreateModal = () => {
+    if (!isCheckedIn && currentUser.role !== 'SUPER_ADMIN') {
+      setShowCheckInAlert(true);
+      return;
+    }
+    setShowCreateModal(true);
+  };
+
   const handleAddAttachment = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files || e.target.files.length === 0) return;
     const files = Array.from(e.target.files);
@@ -133,19 +161,6 @@ export default function TasksPage() {
     }));
     setAttachments((prev) => [...prev, ...newAtts]);
     e.target.value = '';
-  };
-
-  const handleAddMockAttachment = () => {
-    if (!uploadFileName.trim()) return;
-    const newAtt: TaskAttachment = {
-      id: `att-${Date.now()}`,
-      name: uploadFileName.trim().endsWith('.pdf') || uploadFileName.trim().endsWith('.png') ? uploadFileName.trim() : `${uploadFileName.trim()}.pdf`,
-      size: '1.4 MB',
-      type: 'Specification Document',
-      uploadDate: new Date().toISOString().split('T')[0]
-    };
-    setAttachments((prev) => [...prev, newAtt]);
-    setUploadFileName('');
   };
 
   const handleRemoveAttachment = (id: string) => {
@@ -170,15 +185,33 @@ export default function TasksPage() {
       attachments: attachments
     };
 
-    if (assignScope === 'team' && selectedTeamId) {
-      assignTaskToTeam(selectedTeamId, taskPayload);
-    } else if (assignScope === 'all') {
-      assignTaskToAllMembers(taskPayload);
-    } else {
+    if (isRegularEmployee) {
+      // Regular employee assigns task to self directly without scope/assignee prompt
       addTask({
         ...taskPayload,
-        assigneeId: newAssigneeId
+        assigneeId: currentUser.id
       });
+    } else if (isTeamLead) {
+      if (assignScope === 'team' && selectedTeamId) {
+        assignTaskToTeam(selectedTeamId, taskPayload);
+      } else {
+        addTask({
+          ...taskPayload,
+          assigneeId: newAssigneeId || currentUser.id
+        });
+      }
+    } else {
+      // Super Admin / HR
+      if (assignScope === 'team' && selectedTeamId) {
+        assignTaskToTeam(selectedTeamId, taskPayload);
+      } else if (assignScope === 'all') {
+        assignTaskToAllMembers(taskPayload);
+      } else {
+        addTask({
+          ...taskPayload,
+          assigneeId: newAssigneeId
+        });
+      }
     }
 
     // Reset Form
@@ -195,10 +228,14 @@ export default function TasksPage() {
     { status: 'COMPLETED', label: 'Completed', bg: 'border-emerald-500' }
   ];
 
-  // Options for Searchable Selects
+  // Scoped project options
+  const myRelevantProjects = isRegularEmployee
+    ? projects.filter(p => visibleTasks.some(t => t.projectId === p.id) || true)
+    : projects;
+
   const projectOptions = [
     { value: 'ALL', label: 'All Projects' },
-    ...projects.map((p) => ({ value: p.id, label: p.name, subLabel: `Status: ${p.status}` }))
+    ...myRelevantProjects.map((p) => ({ value: p.id, label: p.name, subLabel: `Status: ${p.status}` }))
   ];
 
   const taskTypeOptions = [
@@ -208,7 +245,12 @@ export default function TasksPage() {
 
   const assigneeOptions = [
     { value: 'ALL', label: 'All Assignees' },
-    ...users.map((u) => ({ value: u.id, label: u.name, avatar: u.avatar, subLabel: u.role.replace('_', ' ') }))
+    ...(isAdminOrHR ? users : users.filter(u => myTeamMemberIds.includes(u.id) || u.id === currentUser.id)).map((u) => ({
+      value: u.id,
+      label: u.name,
+      avatar: u.avatar,
+      subLabel: u.role.replace('_', ' ')
+    }))
   ];
 
   const priorityFilterOptions = [
@@ -228,24 +270,33 @@ export default function TasksPage() {
     }))
   ];
 
-  const teamOptions = teams.map((t) => ({
-    value: t.id,
-    label: t.name,
-    subLabel: `${t.memberIds.length} Members`
-  }));
-
-  const availableAssigneeOptions = (isAdminOrHR ? users : isTeamLead ? users.filter((u) => myTeamMemberIds.includes(u.id) || u.id === currentUser.id) : [currentUser]).map((u) => ({
-    value: u.id,
-    label: u.name,
-    avatar: u.avatar,
-    subLabel: u.role.replace('_', ' ')
-  }));
-
   const todayStr = new Date().toISOString().split('T')[0];
 
   return (
     <div className="space-y-6">
       
+      {/* Check-In Warning Banner if not checked in */}
+      {!isCheckedIn && currentUser.role !== 'SUPER_ADMIN' && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 flex items-center justify-between shadow-xs">
+          <div className="flex items-center space-x-3">
+            <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0" />
+            <div>
+              <h4 className="text-xs font-bold text-amber-900">Check-In Required to Log Task Work Hours</h4>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                You must Check In before starting live task timers or creating tasks.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={toggleCheckIn}
+            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-all cursor-pointer"
+          >
+            <LogIn className="w-3.5 h-3.5" />
+            <span>Check In Now</span>
+          </button>
+        </div>
+      )}
+
       {/* Top Header */}
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
@@ -260,7 +311,9 @@ export default function TasksPage() {
             )}
           </div>
           <p className="text-xs text-zinc-500 mt-1">
-            Create multi-scope tasks, upload attachments, track start/creation dates, and log live work sessions.
+            {isRegularEmployee
+              ? "Access your assigned tasks, start & stop live work session timers, and view comprehensive session logs."
+              : "Create multi-scope tasks, manage team member assignments, track live timers, and review task histories."}
           </p>
         </div>
 
@@ -313,51 +366,31 @@ export default function TasksPage() {
           </div>
 
           <button
-            onClick={() => setShowCreateModal(true)}
+            onClick={handleOpenCreateModal}
             className="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-xl text-xs font-bold shadow-glow-orange cursor-pointer flex items-center space-x-1.5 transition-all"
           >
             <Plus className="w-4 h-4" />
-            <span>Create & Assign Task</span>
+            <span>{isRegularEmployee ? 'Create My Task' : 'Create & Assign Task'}</span>
           </button>
         </div>
       </div>
 
-      {/* Deleted Tasks Notice Banner if viewing trash */}
-      {activeTab === 'deleted' && (
-        <div className="p-4 bg-rose-50 border border-rose-200 rounded-2xl flex items-center justify-between shadow-xs">
-          <div className="flex items-center space-x-3">
-            <ShieldAlert className="w-5 h-5 text-rose-600 flex-shrink-0" />
-            <div>
-              <h4 className="text-xs font-bold text-rose-900">
-                Deleted Tasks Review Queue (Super Admin Access)
-              </h4>
-              <p className="text-[11px] text-rose-800 mt-0.5">
-                These tasks were deleted by Team Leaders or members. You can review full logs, restore them back to active state, or permanently purge them.
-              </p>
-            </div>
-          </div>
-          <button
-            onClick={() => setActiveTab('active')}
-            className="px-3 py-1.5 bg-white border border-rose-300 text-rose-800 rounded-xl text-xs font-bold hover:bg-rose-100/60 transition-colors"
-          >
-            Return to Active
-          </button>
-        </div>
-      )}
-
       {/* Filters Toolbar with SearchableSelect Dropdowns */}
-      <div className="card-clean p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-2.5 items-center text-xs">
+      <div className={`card-clean p-4 grid grid-cols-1 sm:grid-cols-2 ${isRegularEmployee ? 'lg:grid-cols-4' : 'lg:grid-cols-6'} gap-2.5 items-center text-xs`}>
         <div className="flex items-center space-x-1.5 text-zinc-500 font-bold uppercase tracking-wider">
           <Filter className="w-4 h-4 text-brand-500" />
           <span>Filter Tasks:</span>
         </div>
 
-        <SearchableSelect
-          options={teamFilterOptions}
-          value={filterTeam}
-          onChange={setFilterTeam}
-          placeholder="Filter by Team"
-        />
+        {/* Team Filter (Hidden for regular employee) */}
+        {!isRegularEmployee && (
+          <SearchableSelect
+            options={teamFilterOptions}
+            value={filterTeam}
+            onChange={setFilterTeam}
+            placeholder="Filter by Team"
+          />
+        )}
 
         <SearchableSelect
           options={projectOptions}
@@ -373,12 +406,15 @@ export default function TasksPage() {
           placeholder="Filter by Task Type"
         />
 
-        <SearchableSelect
-          options={assigneeOptions}
-          value={filterAssignee}
-          onChange={setFilterAssignee}
-          placeholder="Filter by Assignee"
-        />
+        {/* Assignee Filter (Hidden for regular employee) */}
+        {!isRegularEmployee && (
+          <SearchableSelect
+            options={assigneeOptions}
+            value={filterAssignee}
+            onChange={setFilterAssignee}
+            placeholder="Filter by Assignee"
+          />
+        )}
 
         <SearchableSelect
           options={priorityFilterOptions}
@@ -410,11 +446,14 @@ export default function TasksPage() {
                     <p className="text-[11px] text-zinc-400 text-center py-8">No tasks in {col.label}</p>
                   ) : (
                     colTasks.map((t) => {
-                      const assignee = users.find((u) => u.id === t.assigneeId);
                       const taskType = taskTypes.find((tt) => tt.id === t.typeId);
+                      const project = projects.find((p) => p.id === t.projectId);
                       const isOverdue = t.status !== 'COMPLETED' && t.dueDate < todayStr;
                       const isDueToday = t.status !== 'COMPLETED' && t.dueDate === todayStr;
                       const isExceeded = t.loggedHours > t.estimatedHours;
+                      const isThisRunning = Boolean(t.isTimerRunning);
+                      const isAnotherRunning = runningTaskId && runningTaskId !== t.id;
+                      const isCompleted = t.status === 'COMPLETED';
 
                       return (
                         <div
@@ -425,7 +464,7 @@ export default function TasksPage() {
                               ? 'border-rose-400 ring-1 ring-rose-400/40 bg-rose-50/20'
                               : isDueToday
                               ? 'border-amber-400 ring-1 ring-amber-400/30'
-                              : t.isTimerRunning
+                              : isThisRunning
                               ? 'ring-2 ring-brand-500 border-brand-500 bg-brand-50/20 shadow-md'
                               : ''
                           }`}
@@ -459,9 +498,14 @@ export default function TasksPage() {
                             </div>
                           </div>
 
-                          {/* Title & Dates */}
+                          {/* Title & Project Name */}
                           <div>
                             <h4 className="text-xs font-bold text-zinc-900 leading-snug">{t.title}</h4>
+                            <div className="flex items-center space-x-2 text-[10px] text-zinc-500 mt-1">
+                              <span className="font-semibold text-brand-700 bg-brand-50 px-2 py-0.5 rounded">
+                                📁 {project?.name || 'General Project'}
+                              </span>
+                            </div>
                             <div className="flex items-center space-x-2 text-[10px] text-zinc-400 mt-1">
                               <span>Created: {formatDate(t.createdAt)}</span>
                               <span>•</span>
@@ -471,13 +515,6 @@ export default function TasksPage() {
                             </div>
                           </div>
 
-                          {/* Soft Delete info if in deleted queue */}
-                          {t.isSoftDeleted && (
-                            <div className="p-2 bg-rose-50 border border-rose-200 rounded-lg text-[10px] text-rose-800">
-                              Deleted by: <strong>{t.softDeletedBy || 'Team Leader'}</strong>
-                            </div>
-                          )}
-
                           {/* Attachments Icon count */}
                           {t.attachments && t.attachments.length > 0 && (
                             <div className="flex items-center space-x-1 text-[10px] text-zinc-500 font-semibold">
@@ -486,22 +523,9 @@ export default function TasksPage() {
                             </div>
                           )}
 
-                          {/* Footer Info: Assignee & Timer Control */}
+                          {/* Footer Info: Logged Time & START/STOP Button & View Log */}
                           <div className="pt-2 border-t border-zinc-100 flex items-center justify-between text-xs">
-                            <div className="flex items-center space-x-1.5 truncate max-w-[120px]">
-                              {assignee?.avatar && (
-                                <img
-                                  src={assignee.avatar}
-                                  alt={assignee.name}
-                                  className="w-5 h-5 rounded-full object-cover flex-shrink-0"
-                                />
-                              )}
-                              <span className="text-[10px] font-semibold text-zinc-700 truncate">
-                                {assignee?.name || 'Unassigned'}
-                              </span>
-                            </div>
-
-                            <div className="flex items-center space-x-2">
+                            <div className="text-left">
                               <span
                                 className={`text-[10px] font-mono font-bold ${
                                   isExceeded ? 'text-rose-600' : 'text-zinc-700'
@@ -509,36 +533,41 @@ export default function TasksPage() {
                               >
                                 {formatHoursDecimal(t.loggedHours)} / {t.estimatedHours}h
                               </span>
+                            </div>
 
-                              {/* Restore/Permanent Delete if deleted, else Timer Action */}
-                              {t.isSoftDeleted ? (
-                                <div className="flex items-center space-x-1" onClick={(e) => e.stopPropagation()}>
-                                  <button
-                                    onClick={() => restoreTask(t.id)}
-                                    className="p-1 bg-emerald-100 hover:bg-emerald-200 text-emerald-800 rounded-lg"
-                                    title="Restore Task"
-                                  >
-                                    <RotateCcw className="w-3.5 h-3.5" />
-                                  </button>
-                                  <button
-                                    onClick={() => hardDeleteTask(t.id)}
-                                    className="p-1 bg-rose-100 hover:bg-rose-200 text-rose-800 rounded-lg"
-                                    title="Permanently Delete"
-                                  >
-                                    <Trash2 className="w-3.5 h-3.5" />
-                                  </button>
-                                </div>
-                              ) : t.isTimerRunning ? (
+                            <div className="flex items-center space-x-1.5" onClick={(e) => e.stopPropagation()}>
+                              {/* View Log Button */}
+                              <button
+                                onClick={() => setWorklogTask(t)}
+                                className="px-2 py-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
+                                title="View Session Worklog"
+                              >
+                                View Log
+                              </button>
+
+                              {/* Live Timer START / STOP Button */}
+                              {isThisRunning ? (
                                 <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    toggleTaskTimer(t.id);
-                                  }}
+                                  onClick={(e) => handleStartStopClick(t.id, e)}
                                   className="px-2.5 py-1 rounded-lg text-white transition-all cursor-pointer bg-rose-500 hover:bg-rose-600 animate-pulse shadow-glow-orange flex items-center space-x-1 font-bold text-[10px]"
                                   title="Stop Active Timer"
                                 >
                                   <Square className="w-3 h-3 fill-current" />
                                   <span>Stop</span>
+                                </button>
+                              ) : !isCompleted && !isSuperAdmin ? (
+                                <button
+                                  onClick={(e) => handleStartStopClick(t.id, e)}
+                                  disabled={Boolean(isAnotherRunning)}
+                                  className={`px-2.5 py-1 rounded-lg text-white font-bold text-[10px] flex items-center space-x-1 transition-all ${
+                                    isAnotherRunning
+                                      ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed'
+                                      : 'bg-brand-500 hover:bg-brand-600 shadow-sm cursor-pointer'
+                                  }`}
+                                  title={isAnotherRunning ? 'Another task timer is active. Stop it first.' : 'Start Timer'}
+                                >
+                                  <Play className="w-3 h-3 fill-current" />
+                                  <span>Start</span>
                                 </button>
                               ) : null}
                             </div>
@@ -553,34 +582,39 @@ export default function TasksPage() {
           })}
         </div>
       ) : (
-        /* List View */
+        /* List / Table View */
         <div className="card-clean overflow-hidden">
           <table className="w-full text-left text-xs">
             <thead className="bg-zinc-100 border-b border-zinc-200 text-zinc-500 font-bold uppercase tracking-wider">
               <tr>
                 <th className="p-3">Task Title & Details</th>
+                <th className="p-3">Project</th>
                 <th className="p-3">Task Type</th>
-                <th className="p-3">Assignee</th>
+                {!isRegularEmployee && <th className="p-3">Assignee</th>}
                 <th className="p-3">Priority</th>
                 <th className="p-3">Dates</th>
                 <th className="p-3">Status</th>
                 <th className="p-3">Logged / Est</th>
-                <th className="p-3 text-right">Actions</th>
+                <th className="p-3 text-right">Actions & Timer</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-zinc-100">
               {sortedTasks.length === 0 ? (
                 <tr>
-                  <td colSpan={8} className="p-8 text-center text-zinc-400">
+                  <td colSpan={isRegularEmployee ? 8 : 9} className="p-8 text-center text-zinc-400">
                     No tasks match the filter criteria.
                   </td>
                 </tr>
               ) : (
                 sortedTasks.map((t) => {
                   const assignee = users.find((u) => u.id === t.assigneeId);
+                  const project = projects.find((p) => p.id === t.projectId);
                   const taskType = taskTypes.find((tt) => tt.id === t.typeId);
                   const isOverdue = t.status !== 'COMPLETED' && t.dueDate < todayStr;
                   const isExceeded = t.loggedHours > t.estimatedHours;
+                  const isThisRunning = Boolean(t.isTimerRunning);
+                  const isAnotherRunning = runningTaskId && runningTaskId !== t.id;
+                  const isCompleted = t.status === 'COMPLETED';
 
                   return (
                     <tr
@@ -596,89 +630,112 @@ export default function TasksPage() {
                           </span>
                         )}
                       </td>
-                      <td className="p-3">
-                        <span
-                          className="px-2 py-0.5 rounded text-[10px] font-bold text-white shadow-xs"
-                          style={{ backgroundColor: taskType?.color }}
-                        >
-                          {taskType?.name}
+
+                      {/* Project Column */}
+                      <td className="p-3 whitespace-nowrap">
+                        <span className="font-semibold text-brand-700 bg-brand-50 px-2 py-0.5 rounded text-[11px]">
+                          📁 {project?.name || 'General Project'}
                         </span>
                       </td>
-                      <td className="p-3">
-                        <div className="flex items-center space-x-2">
-                          {assignee?.avatar && (
-                            <img
-                              src={assignee.avatar}
-                              alt={assignee.name}
-                              className="w-5 h-5 rounded-full object-cover"
-                            />
-                          )}
-                          <span className="font-semibold text-zinc-800">{assignee?.name}</span>
-                        </div>
-                      </td>
-                      <td className="p-3">
+
+                      <td className="p-3 whitespace-nowrap">
                         <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase ${
+                          className="px-2 py-0.5 rounded text-[9px] font-bold uppercase text-white shadow-xs"
+                          style={{ backgroundColor: taskType?.color || '#F97316' }}
+                        >
+                          {taskType?.name || 'Task'}
+                        </span>
+                      </td>
+
+                      {/* Assignee Column (Only if not employee) */}
+                      {!isRegularEmployee && (
+                        <td className="p-3 whitespace-nowrap">
+                          <div className="flex items-center space-x-1.5">
+                            {assignee?.avatar && (
+                              <img
+                                src={assignee.avatar}
+                                alt={assignee.name}
+                                className="w-5 h-5 rounded-full object-cover"
+                              />
+                            )}
+                            <span className="text-zinc-700 font-semibold">{assignee?.name || 'Unassigned'}</span>
+                          </div>
+                        </td>
+                      )}
+
+                      <td className="p-3 whitespace-nowrap">
+                        <span
+                          className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
                             t.priority === 'URGENT'
                               ? 'bg-rose-100 text-rose-700'
                               : t.priority === 'HIGH'
                               ? 'bg-amber-100 text-amber-800'
-                              : 'bg-zinc-200 text-zinc-700'
+                              : 'bg-zinc-100 text-zinc-700'
                           }`}
                         >
                           {t.priority}
                         </span>
                       </td>
-                      <td className="p-3 text-[11px] space-y-0.5">
-                        <p className="text-zinc-500">Created: {formatDate(t.createdAt)}</p>
-                        <p className={`font-semibold ${isOverdue ? 'text-rose-600 font-bold' : 'text-zinc-700'}`}>
-                          Due: {formatDate(t.dueDate)} {isOverdue && '⚠️'}
-                        </p>
-                      </td>
-                      <td className="p-3 font-semibold text-zinc-700">
-                        <span
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                            t.status === 'COMPLETED'
-                              ? 'bg-emerald-100 text-emerald-800'
-                              : t.status === 'IN_PROGRESS'
-                              ? 'bg-brand-100 text-brand-800'
-                              : 'bg-zinc-100 text-zinc-700'
-                          }`}
-                        >
-                          {t.status.replace('_', ' ')}
+
+                      <td className="p-3 whitespace-nowrap text-zinc-500 text-[11px]">
+                        <span className={isOverdue ? 'text-rose-600 font-bold' : ''}>
+                          Due: {formatDate(t.dueDate)}
                         </span>
                       </td>
-                      <td className="p-3 font-mono font-bold">
-                        <span className={isExceeded ? 'text-rose-600' : 'text-zinc-800'}>
+
+                      <td className="p-3 whitespace-nowrap">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          isThisRunning ? 'bg-brand-500 text-white animate-pulse' :
+                          t.status === 'COMPLETED' ? 'bg-emerald-100 text-emerald-800' :
+                          t.status === 'IN_PROGRESS' ? 'bg-amber-100 text-amber-800' : 'bg-zinc-100 text-zinc-700'
+                        }`}>
+                          {isThisRunning ? '⚡ Running' : t.status.replace('_', ' ')}
+                        </span>
+                      </td>
+
+                      <td className="p-3 whitespace-nowrap font-mono">
+                        <span className={`font-bold ${isExceeded ? 'text-rose-600' : 'text-zinc-800'}`}>
                           {formatHoursDecimal(t.loggedHours)} / {t.estimatedHours}h
                         </span>
                       </td>
-                      <td className="p-3 text-right" onClick={(e) => e.stopPropagation()}>
-                        {t.isSoftDeleted ? (
-                          <div className="flex items-center justify-end space-x-1.5">
-                            <button
-                              onClick={() => restoreTask(t.id)}
-                              className="px-2.5 py-1 bg-emerald-600 text-white rounded-lg font-bold text-[10px]"
-                            >
-                              Restore
-                            </button>
-                            <button
-                              onClick={() => hardDeleteTask(t.id)}
-                              className="px-2.5 py-1 bg-rose-600 text-white rounded-lg font-bold text-[10px]"
-                            >
-                              Purge
-                            </button>
-                          </div>
-                        ) : t.isTimerRunning ? (
+
+                      <td className="p-3 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
+                        <div className="flex items-center justify-end space-x-1.5">
+                          {/* View Log Button */}
                           <button
-                            onClick={() => toggleTaskTimer(t.id)}
-                            className="px-3 py-1 rounded-lg text-white font-bold text-[11px] flex items-center space-x-1 ml-auto cursor-pointer bg-rose-500 hover:bg-rose-600 animate-pulse shadow-glow-orange"
-                            title="Stop Active Timer"
+                            onClick={() => setWorklogTask(t)}
+                            className="px-2.5 py-1 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-lg text-xs font-bold transition-colors cursor-pointer"
+                            title="View Session Worklog"
                           >
-                            <Square className="w-3 h-3 fill-current" />
-                            <span>Stop</span>
+                            View Log
                           </button>
-                        ) : null}
+
+                          {/* START / STOP Live Timer Button */}
+                          {isThisRunning ? (
+                            <button
+                              onClick={(e) => handleStartStopClick(t.id, e)}
+                              className="px-3 py-1 bg-rose-500 hover:bg-rose-600 text-white rounded-lg text-xs font-bold flex items-center space-x-1 shadow-glow-orange animate-pulse cursor-pointer"
+                              title="Stop Active Timer"
+                            >
+                              <Square className="w-3.5 h-3.5 fill-current" />
+                              <span>Stop</span>
+                            </button>
+                          ) : !isCompleted && !isSuperAdmin ? (
+                            <button
+                              onClick={(e) => handleStartStopClick(t.id, e)}
+                              disabled={Boolean(isAnotherRunning)}
+                              className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center space-x-1 transition-all ${
+                                isAnotherRunning
+                                  ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed'
+                                  : 'bg-brand-500 hover:bg-brand-600 text-white shadow-sm cursor-pointer'
+                              }`}
+                              title={isAnotherRunning ? 'Another task timer is active. Stop it first.' : 'Start Timer'}
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current" />
+                              <span>Start</span>
+                            </button>
+                          ) : null}
+                        </div>
                       </td>
                     </tr>
                   );
@@ -689,200 +746,235 @@ export default function TasksPage() {
         </div>
       )}
 
-      {/* Create & Assign Task Modal with Multi-Scope & Attachments */}
+      {/* Create Task Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto animate-in zoom-in-95">
-            <div className="flex items-center justify-between border-b border-zinc-100 pb-3">
-              <h3 className="font-bold text-base text-zinc-900 flex items-center gap-2">
-                <Plus className="w-5 h-5 text-brand-500" /> Create & Assign Task
-              </h3>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white w-full max-w-xl rounded-2xl shadow-2xl border border-zinc-200 overflow-hidden animate-in zoom-in-95">
+            <div className="p-5 border-b border-zinc-100 flex items-center justify-between bg-zinc-50">
+              <div>
+                <h3 className="text-base font-black text-zinc-900">
+                  {isRegularEmployee ? 'Create My Task' : 'Create & Assign Task'}
+                </h3>
+                <p className="text-xs text-zinc-500">
+                  {isRegularEmployee
+                    ? 'New task will be automatically assigned to you.'
+                    : isTeamLead
+                    ? 'Assign new task to yourself or your team members.'
+                    : 'Assign new task to individuals or teams.'}
+                </p>
+              </div>
               <button
                 onClick={() => setShowCreateModal(false)}
-                className="text-zinc-400 hover:text-zinc-600 cursor-pointer"
+                className="p-1 rounded-lg text-zinc-400 hover:text-zinc-700 cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateTask} className="space-y-3.5 text-xs">
+            <form onSubmit={handleCreateTask} className="p-6 space-y-4 max-h-[75vh] overflow-y-auto text-xs">
               <div>
-                <label className="font-bold text-zinc-700 block mb-1">Task Title *</label>
+                <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                  Task Title *
+                </label>
                 <input
                   type="text"
                   required
-                  placeholder="e.g. Develop Stripe Payment Webhook & Email Handler"
+                  placeholder="e.g. Design responsive dashboard UI"
                   value={newTitle}
                   onChange={(e) => setNewTitle(e.target.value)}
-                  className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500 focus:outline-none"
+                  className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs"
                 />
               </div>
 
               <div>
-                <label className="font-bold text-zinc-700 block mb-1">Description & Specifications</label>
+                <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                  Description
+                </label>
                 <textarea
-                  rows={2}
-                  placeholder="Provide technical requirements, criteria, and handover notes..."
+                  rows={3}
+                  placeholder="Provide task instructions and context..."
                   value={newDesc}
                   onChange={(e) => setNewDesc(e.target.value)}
-                  className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500 focus:outline-none"
+                  className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs"
                 />
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <SearchableSelect
-                  label="Project"
-                  required
-                  options={projects.map((p) => ({ value: p.id, label: p.name, subLabel: `Status: ${p.status}` }))}
-                  value={newProjectId}
-                  onChange={setNewProjectId}
-                />
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                    Project *
+                  </label>
+                  <select
+                    value={newProjectId}
+                    onChange={(e) => setNewProjectId(e.target.value)}
+                    className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs bg-white"
+                  >
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-                <SearchableSelect
-                  label="Task Type Master"
-                  required
-                  options={taskTypes.map((tt) => ({ value: tt.id, label: tt.name, color: tt.color, subLabel: tt.code }))}
-                  value={newTypeId}
-                  onChange={setNewTypeId}
-                />
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                    Task Type *
+                  </label>
+                  <select
+                    value={newTypeId}
+                    onChange={(e) => setNewTypeId(e.target.value)}
+                    className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs bg-white"
+                  >
+                    {taskTypes.map((tt) => (
+                      <option key={tt.id} value={tt.id}>
+                        {tt.name} ({tt.code})
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
-              {/* Assignment Target Scope (Individual vs Selected Team vs All Members) */}
-              <div className="p-3 bg-zinc-50 border border-zinc-200 rounded-xl space-y-2">
-                <span className="font-bold text-zinc-900 block">Assignment Target Scope *</span>
-                <div className="flex flex-wrap items-center gap-4">
-                  <label className="flex items-center space-x-1.5 cursor-pointer font-semibold text-zinc-800">
-                    <input
-                      type="radio"
-                      name="assignScope"
-                      checked={assignScope === 'individual'}
-                      onChange={() => setAssignScope('individual')}
-                      className="accent-brand-500"
-                    />
-                    <span>Individual Team Member</span>
+              {/* Assignee Scope selection (HIDDEN for regular Employee) */}
+              {!isRegularEmployee && (
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                    Assignee Scope *
                   </label>
+                  <div className="grid grid-cols-2 gap-2 mb-2">
+                    <button
+                      type="button"
+                      onClick={() => setAssignScope('individual')}
+                      className={`p-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${
+                        assignScope === 'individual'
+                          ? 'bg-brand-50 border-brand-500 text-brand-700'
+                          : 'border-zinc-200 text-zinc-600'
+                      }`}
+                    >
+                      Individual Member
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setAssignScope('team')}
+                      className={`p-2 rounded-xl text-xs font-bold border transition-colors cursor-pointer ${
+                        assignScope === 'team'
+                          ? 'bg-brand-50 border-brand-500 text-brand-700'
+                          : 'border-zinc-200 text-zinc-600'
+                      }`}
+                    >
+                      Team Assignment
+                    </button>
+                  </div>
 
-                  <label className="flex items-center space-x-1.5 cursor-pointer font-semibold text-zinc-800">
-                    <input
-                      type="radio"
-                      name="assignScope"
-                      checked={assignScope === 'team'}
-                      onChange={() => setAssignScope('team')}
-                      className="accent-brand-500"
-                    />
-                    <span>Selected Team</span>
-                  </label>
-
-                  {isAdminOrHR && (
-                    <label className="flex items-center space-x-1.5 cursor-pointer font-semibold text-zinc-800">
-                      <input
-                        type="radio"
-                        name="assignScope"
-                        checked={assignScope === 'all'}
-                        onChange={() => setAssignScope('all')}
-                        className="accent-brand-500"
-                      />
-                      <span>All Organization Members</span>
-                    </label>
+                  {assignScope === 'individual' ? (
+                    <select
+                      value={newAssigneeId}
+                      onChange={(e) => setNewAssigneeId(e.target.value)}
+                      className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs bg-white"
+                    >
+                      {(isAdminOrHR ? users : users.filter(u => myTeamMemberIds.includes(u.id) || u.id === currentUser.id)).map((u) => (
+                        <option key={u.id} value={u.id}>
+                          {u.name} ({u.role.replace('_', ' ')})
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <select
+                      value={selectedTeamId}
+                      onChange={(e) => setSelectedTeamId(e.target.value)}
+                      className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs bg-white"
+                    >
+                      {(isTeamLead ? teams.filter(t => t.leaderId === currentUser.id) : teams).map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.memberIds.length} members)
+                        </option>
+                      ))}
+                    </select>
                   )}
-                </div>
-              </div>
-
-              {/* Scope Target Selectors */}
-              {assignScope === 'team' ? (
-                <SearchableSelect
-                  label="Select Target Team"
-                  required
-                  options={teamOptions}
-                  value={selectedTeamId}
-                  onChange={setSelectedTeamId}
-                  placeholder="Search and select team..."
-                />
-              ) : assignScope === 'individual' ? (
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <SearchableSelect
-                    label="Assignee (Team Member)"
-                    required
-                    options={availableAssigneeOptions}
-                    value={newAssigneeId}
-                    onChange={setNewAssigneeId}
-                    placeholder="Search member by name..."
-                  />
-
-                  <SearchableSelect
-                    label="Priority"
-                    required
-                    options={[
-                      { value: 'LOW', label: 'Low Priority', color: '#10B981' },
-                      { value: 'MEDIUM', label: 'Medium Priority', color: '#3B82F6' },
-                      { value: 'HIGH', label: 'High Priority', color: '#F59E0B' },
-                      { value: 'URGENT', label: 'Urgent Priority', color: '#EF4444' }
-                    ]}
-                    value={newPriority}
-                    onChange={(val) => setNewPriority(val as TaskPriority)}
-                  />
-                </div>
-              ) : (
-                <div className="p-3 bg-brand-50 border border-brand-100 rounded-xl text-brand-900 font-medium">
-                  🌟 This task will be duplicated and assigned to all active employees and team leaders across the company.
                 </div>
               )}
 
-              {/* Multiple Document Upload Field */}
-              <div className="p-3 bg-zinc-50 border border-zinc-200 rounded-xl space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold text-zinc-900 flex items-center gap-1.5">
-                    <Paperclip className="w-3.5 h-3.5 text-brand-500" /> Multiple Document Attachments
-                  </span>
-                  <label className="px-3 py-1 bg-white border border-zinc-300 text-zinc-700 rounded-lg text-[11px] font-bold hover:bg-zinc-100 transition-colors cursor-pointer flex items-center gap-1 shadow-xs">
-                    <Upload className="w-3 h-3" />
-                    <span>Upload File</span>
-                    <input
-                      type="file"
-                      multiple
-                      onChange={handleAddAttachment}
-                      className="hidden"
-                    />
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                    Priority
                   </label>
-                </div>
-
-                {/* Quick Add filename input */}
-                <div className="flex items-center space-x-2">
-                  <input
-                    type="text"
-                    placeholder="Or type doc name: e.g. Functional_Specs_v2.pdf"
-                    value={uploadFileName}
-                    onChange={(e) => setUploadFileName(e.target.value)}
-                    className="flex-1 px-3 py-1.5 bg-white border border-zinc-200 rounded-lg text-xs focus:border-brand-500 focus:outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={handleAddMockAttachment}
-                    className="px-3 py-1.5 bg-zinc-800 hover:bg-black text-white rounded-lg text-xs font-bold cursor-pointer"
+                  <select
+                    value={newPriority}
+                    onChange={(e) => setNewPriority(e.target.value as TaskPriority)}
+                    className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs bg-white"
                   >
-                    Attach
-                  </button>
+                    <option value="LOW">Low</option>
+                    <option value="MEDIUM">Medium</option>
+                    <option value="HIGH">High</option>
+                    <option value="URGENT">Urgent</option>
+                  </select>
                 </div>
 
-                {/* Attached Files List */}
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                    Estimated Hours
+                  </label>
+                  <input
+                    type="number"
+                    min="0.5"
+                    step="0.5"
+                    value={newEstHours}
+                    onChange={(e) => setNewEstHours(Number(e.target.value))}
+                    className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                    Start Date
+                  </label>
+                  <input
+                    type="date"
+                    value={newStartDate}
+                    onChange={(e) => setNewStartDate(e.target.value)}
+                    className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                    Due Date *
+                  </label>
+                  <input
+                    type="date"
+                    required
+                    value={newDueDate}
+                    onChange={(e) => setNewDueDate(e.target.value)}
+                    className="w-full p-2.5 border border-zinc-300 rounded-xl focus:outline-none focus:border-brand-500 text-xs"
+                  />
+                </div>
+              </div>
+
+              {/* Attachments */}
+              <div>
+                <label className="block text-[11px] font-bold text-zinc-700 uppercase mb-1">
+                  Attachments & Documents
+                </label>
+                <input
+                  type="file"
+                  multiple
+                  onChange={handleAddAttachment}
+                  className="w-full text-xs text-zinc-500 file:mr-2 file:py-1.5 file:px-3 file:rounded-xl file:border-0 file:text-xs file:font-bold file:bg-brand-50 file:text-brand-700 hover:file:bg-brand-100 cursor-pointer"
+                />
                 {attachments.length > 0 && (
-                  <div className="space-y-1.5 pt-1">
+                  <div className="mt-2 space-y-1">
                     {attachments.map((att) => (
-                      <div
-                        key={att.id}
-                        className="p-2 bg-white border border-zinc-200 rounded-lg flex items-center justify-between text-xs shadow-xs"
-                      >
-                        <div className="flex items-center space-x-2 truncate">
-                          <FileText className="w-3.5 h-3.5 text-brand-500 flex-shrink-0" />
-                          <span className="font-medium text-zinc-900 truncate">{att.name}</span>
-                          <span className="text-[10px] text-zinc-400">({att.size})</span>
-                        </div>
+                      <div key={att.id} className="flex items-center justify-between p-2 bg-zinc-50 rounded-lg text-xs">
+                        <span className="truncate max-w-[200px] font-medium">{att.name}</span>
                         <button
                           type="button"
                           onClick={() => handleRemoveAttachment(att.id)}
-                          className="text-zinc-400 hover:text-rose-600 ml-2"
+                          className="text-rose-500 font-bold hover:underline"
                         >
-                          <X className="w-3.5 h-3.5" />
+                          Remove
                         </button>
                       </div>
                     ))}
@@ -890,56 +982,19 @@ export default function TasksPage() {
                 )}
               </div>
 
-              {/* Estimated Hours, Start Date, Due Date */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div>
-                  <label className="font-bold text-zinc-700 block mb-1">Est. Hours *</label>
-                  <input
-                    type="number"
-                    step="0.5"
-                    min="0.5"
-                    required
-                    value={newEstHours}
-                    onChange={(e) => setNewEstHours(Number(e.target.value))}
-                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-bold text-zinc-700 block mb-1">Start Date</label>
-                  <input
-                    type="date"
-                    value={newStartDate}
-                    onChange={(e) => setNewStartDate(e.target.value)}
-                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="font-bold text-zinc-700 block mb-1">Due Date *</label>
-                  <input
-                    type="date"
-                    required
-                    value={newDueDate}
-                    onChange={(e) => setNewDueDate(e.target.value)}
-                    className="w-full px-3 py-2 border border-zinc-200 rounded-xl focus:border-brand-500"
-                  />
-                </div>
-              </div>
-
-              <div className="pt-3 border-t border-zinc-100 flex justify-end space-x-2">
+              <div className="pt-3 border-t border-zinc-100 flex items-center justify-end space-x-2">
                 <button
                   type="button"
                   onClick={() => setShowCreateModal(false)}
-                  className="px-4 py-2 text-zinc-600 hover:bg-zinc-100 rounded-xl cursor-pointer font-semibold"
+                  className="px-4 py-2 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 font-bold rounded-xl text-xs cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-xl font-bold cursor-pointer shadow-glow-orange"
+                  className="px-5 py-2 bg-brand-500 hover:bg-brand-600 text-white font-bold rounded-xl text-xs shadow-glow-orange cursor-pointer"
                 >
-                  Create & Assign Task
+                  Save & Create Task
                 </button>
               </div>
             </form>
@@ -947,7 +1002,44 @@ export default function TasksPage() {
         </div>
       )}
 
-      {/* Task Details & Worklogs Modal */}
+      {/* Check-In Alert Modal */}
+      {showCheckInAlert && (
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <div className="bg-white w-full max-w-md rounded-2xl p-6 shadow-2xl border border-zinc-200 space-y-4 animate-in zoom-in-95">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center">
+              <AlertTriangle className="w-6 h-6" />
+            </div>
+
+            <div className="space-y-1">
+              <h3 className="text-base font-extrabold text-zinc-900">Attendance Check-In Required</h3>
+              <p className="text-xs text-zinc-600 leading-relaxed">
+                You must Check In before starting a task timer or creating tasks. Would you like to check in now?
+              </p>
+            </div>
+
+            <div className="pt-2 flex items-center justify-end space-x-2 text-xs font-bold">
+              <button
+                onClick={() => setShowCheckInAlert(false)}
+                className="px-4 py-2 bg-zinc-100 hover:bg-zinc-200 text-zinc-700 rounded-xl cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  toggleCheckIn();
+                  setShowCheckInAlert(false);
+                }}
+                className="px-4 py-2 bg-brand-500 hover:bg-brand-600 text-white rounded-xl shadow-glow-orange cursor-pointer flex items-center space-x-1.5"
+              >
+                <LogIn className="w-4 h-4" />
+                <span>Check In Now</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Task Details Modal */}
       {selectedTask && (
         <TaskDetailsModal
           task={selectedTask}
@@ -965,6 +1057,15 @@ export default function TasksPage() {
           task={editingTask}
           isOpen={Boolean(editingTask)}
           onClose={() => setEditingTask(null)}
+        />
+      )}
+
+      {/* Task Worklog Modal */}
+      {worklogTask && (
+        <TaskWorklogModal
+          task={worklogTask}
+          projectName={projects.find(p => p.id === worklogTask.projectId)?.name}
+          onClose={() => setWorklogTask(null)}
         />
       )}
 

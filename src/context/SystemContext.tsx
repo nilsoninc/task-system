@@ -1,6 +1,6 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   UserProfile,
   UserRole,
@@ -12,6 +12,7 @@ import {
   AttendanceRecord,
   LeaveApplication,
   CompOffRequest,
+  PaidLeaveCredit,
   LeaveRule,
   CompanyEvent,
   Payslip,
@@ -31,6 +32,7 @@ import {
   INITIAL_EVENTS,
   INITIAL_CHAT_CHANNELS,
   INITIAL_CHAT_MESSAGES,
+  INITIAL_PAID_LEAVE_CREDITS
 } from '@/lib/mock-data';
 
 const DEFAULT_SETTINGS: SystemSettings = {
@@ -121,15 +123,20 @@ interface SystemContextType {
   sendTaskReminder: (taskId: string) => void;
   updateTaskStatus: (taskId: string, status: Task['status']) => void;
 
-  // Leave Applications
+  // Leave Applications & Credits
   applyLeave: (leave: Omit<LeaveApplication, 'id' | 'appliedOn' | 'status' | 'userId' | 'userName' | 'userRole'> & { workInAbsence?: string }) => void;
   editLeave: (leaveId: string, updated: Partial<LeaveApplication>) => void;
   reviewLeave: (leaveId: string, status: 'APPROVED' | 'REJECTED', reason?: string) => void;
   softDeleteLeave: (leaveId: string) => void;
   hardDeleteLeave: (leaveId: string) => void;
-  addPaidLeaveCredit: (userIds: string[], days: number, reason: string) => void;
+  paidLeaveCredits: PaidLeaveCredit[];
+  addPaidLeaveCredit: (userIds: string[], days: number, reason: string, validFrom?: string, validTo?: string) => void;
+  editPaidLeaveCredit: (creditId: string, updatedData: { days: number; reason: string; validFrom?: string; validTo?: string }) => void;
+  deletePaidLeaveCredit: (creditId: string) => void;
   submitCompOff: (request: Omit<CompOffRequest, 'id' | 'requestedOn' | 'status' | 'userId' | 'userName'> & { userId?: string; userName?: string; convertedDays?: number; status?: 'PENDING' | 'APPROVED_BY_TL' | 'APPROVED' | 'REJECTED' }) => void;
   reviewCompOff: (requestId: string, status: 'PENDING' | 'APPROVED_BY_TL' | 'APPROVED' | 'REJECTED') => void;
+  editCompOff: (compOffId: string, updated: Partial<CompOffRequest>) => void;
+  deleteCompOff: (compOffId: string) => void;
   addLeaveRule: (rule: Omit<LeaveRule, 'id'>) => void;
 
   // Master Administration & System Settings
@@ -207,6 +214,26 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
   const [attendance, setAttendance] = useState<AttendanceRecord[]>([]);
   const [leaveApplications, setLeaveApplications] = useState<LeaveApplication[]>([]);
   const [compOffRequests, setCompOffRequests] = useState<CompOffRequest[]>([]);
+  const [paidLeaveCredits, setPaidLeaveCredits] = useState<PaidLeaveCredit[]>(() => {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('task_system_paid_leave_credits');
+      if (saved) {
+        try {
+          return JSON.parse(saved);
+        } catch {
+          // fallback
+        }
+      }
+    }
+    return INITIAL_PAID_LEAVE_CREDITS;
+  });
+
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('task_system_paid_leave_credits', JSON.stringify(paidLeaveCredits));
+    }
+  }, [paidLeaveCredits]);
+
   const [leaveRules, setLeaveRules] = useState<LeaveRule[]>([]);
   const [events] = useState<CompanyEvent[]>(INITIAL_EVENTS);
   const [payslips, setPayslips] = useState<Payslip[]>([]);
@@ -395,14 +422,153 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     }
   }, [users]);
 
-  // ── Attendance / Timer ─────────────────────────────────────────────────────
+  // ── Attendance / Daily Session Timer ──────────────────────────────────────────
   const isCheckedIn = currentUser ? currentUser.isLoggedIn : false;
-  const [activeWorkSeconds, setActiveWorkSeconds] = useState<number>(27000);
+  const [activeWorkSeconds, setActiveWorkSeconds] = useState<number>(() => {
+    if (typeof window !== 'undefined') {
+      const today = new Date().toISOString().split('T')[0];
+      const savedUserId = localStorage.getItem('task_system_user_id') || 'user-1';
+      const savedKey = `task_system_work_seconds_${savedUserId}_${today}`;
+      const savedSecs = localStorage.getItem(savedKey);
+      if (savedSecs !== null) {
+        const parsed = parseInt(savedSecs, 10);
+        if (!isNaN(parsed)) return parsed;
+      }
+    }
+    return 0; // Starts from 00:00:00 on every new day
+  });
 
-  // Auto Check-Out Scheduler
+  // Sync activeWorkSeconds to localStorage per user per day
+  useEffect(() => {
+    if (typeof window !== 'undefined' && currentUser) {
+      const today = new Date().toISOString().split('T')[0];
+      const savedKey = `task_system_work_seconds_${currentUser.id}_${today}`;
+      localStorage.setItem(savedKey, activeWorkSeconds.toString());
+    }
+  }, [activeWorkSeconds, currentUser]);
+
+  // When currentUser changes or day changes, load user's seconds for today
+  useEffect(() => {
+    if (typeof window !== 'undefined' && currentUser) {
+      const today = new Date().toISOString().split('T')[0];
+      const savedKey = `task_system_work_seconds_${currentUser.id}_${today}`;
+      const savedSecs = localStorage.getItem(savedKey);
+      if (savedSecs !== null) {
+        const parsed = parseInt(savedSecs, 10);
+        if (!isNaN(parsed)) {
+          setActiveWorkSeconds(parsed);
+          return;
+        }
+      }
+      // If user is checked in and had attendance today with workHours, initialize from attendance
+      const todayAtt = attendance.find(a => a.userId === currentUser.id && a.date === today);
+      if (todayAtt && todayAtt.workHours > 0) {
+        setActiveWorkSeconds(Math.round(todayAtt.workHours * 3600));
+      } else {
+        setActiveWorkSeconds(0);
+      }
+    }
+  }, [currentUser?.id]);
+
+  const lastUserActivityRef = useRef<number>(Date.now());
+
+  // Track user interactions (keyboard, mouse, scroll, touch) to detect 10-min idle
+  useEffect(() => {
+    const handleActivity = () => {
+      lastUserActivityRef.current = Date.now();
+    };
+
+    window.addEventListener('mousemove', handleActivity);
+    window.addEventListener('mousedown', handleActivity);
+    window.addEventListener('keydown', handleActivity);
+    window.addEventListener('scroll', handleActivity, true);
+    window.addEventListener('touchstart', handleActivity);
+
+    return () => {
+      window.removeEventListener('mousemove', handleActivity);
+      window.removeEventListener('mousedown', handleActivity);
+      window.removeEventListener('keydown', handleActivity);
+      window.removeEventListener('scroll', handleActivity, true);
+      window.removeEventListener('touchstart', handleActivity);
+    };
+  }, []);
+
+  // Window BeforeUnload Warning: Remind user to check out before closing browser window/tab
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isCheckedIn) {
+        e.preventDefault();
+        e.returnValue = 'You are currently Checked In. Please make sure to Check Out before closing the application.';
+        return e.returnValue;
+      }
+    };
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [isCheckedIn]);
+
+  // 10-Minute Idle Auto Check-Out Tracker & Scheduled Check-Out
   useEffect(() => {
     const autoCheckOutTimer = setInterval(() => {
       const now = new Date();
+      const nowTime = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const today = now.toISOString().split('T')[0];
+
+      // 1. Check 10-Minute Inactivity for the currently active logged-in user
+      if (currentUser && isCheckedIn) {
+        const TEN_MINUTES_MS = 10 * 60 * 1000;
+        const idleTime = Date.now() - lastUserActivityRef.current;
+        if (idleTime >= TEN_MINUTES_MS) {
+          // Perform Automatic Check-out due to 10 min inactivity
+          setUsers(prevUsers =>
+            prevUsers.map(u => {
+              if (u.id === currentUser.id) {
+                return {
+                  ...u,
+                  isLoggedIn: false,
+                  status: 'OFFLINE' as const,
+                  checkOutTime: nowTime
+                };
+              }
+              return u;
+            })
+          );
+
+          persist(`/api/users/${currentUser.id}`, 'PATCH', {
+            isLoggedIn: false,
+            status: 'OFFLINE',
+            checkOutTime: nowTime
+          });
+
+          // Update attendance record for today
+          const todayRecord = attendance.find(a => a.userId === currentUser.id && a.date === today);
+          const computedHours = parseFloat((activeWorkSeconds / 3600).toFixed(1));
+          setAttendance(prev =>
+            prev.map(att =>
+              att.userId === currentUser.id && att.date === today
+                ? { ...att, checkOut: nowTime, workHours: computedHours, notes: (att.notes ? att.notes + ' • ' : '') + 'Auto checked out (10m inactivity)' }
+                : att
+            )
+          );
+
+          if (todayRecord) {
+            persist(`/api/attendance/${todayRecord.id}`, 'PATCH', {
+              checkOut: nowTime,
+              workHours: computedHours,
+              notes: (todayRecord.notes ? todayRecord.notes + ' • ' : '') + 'Auto checked out (10m inactivity)'
+            });
+          }
+
+          addNotification({
+            userId: currentUser.id,
+            title: 'Auto Check-Out Warning',
+            message: 'You have been automatically checked out due to 10 minutes of inactivity.',
+            type: 'SYSTEM'
+          });
+          return;
+        }
+      }
+
+      // 2. Global End-of-Day scheduler for other users
       const hours = now.getHours();
       const minutes = now.getMinutes();
       const is9PMWindow = hours === 21 && minutes === 0;
@@ -428,9 +594,10 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
           })
         );
       }
-    }, 60000);
+    }, 5000); // Check every 5 seconds
+
     return () => clearInterval(autoCheckOutTimer);
-  }, []);
+  }, [currentUser, isCheckedIn, attendance, activeWorkSeconds, addNotification]);
 
   // Live Timer Ticker
   useEffect(() => {
@@ -452,6 +619,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     if (!currentUser) return;
     const today = new Date().toISOString().split('T')[0];
     const nowTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    lastUserActivityRef.current = Date.now();
 
     setUsers(prev =>
       prev.map(u =>
@@ -512,14 +680,36 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
   const toggleTaskTimer = useCallback((taskId: string) => {
     if (!currentUser) return;
-    setTasks(prev =>
-      prev.map(t => {
+    lastUserActivityRef.current = Date.now();
+    const todayStr = new Date().toISOString().split('T')[0];
+
+    setTasks(prev => {
+      const targetTask = prev.find(t => t.id === taskId);
+      if (!targetTask) return prev;
+      const willStart = !targetTask.isTimerRunning;
+
+      // Super Admin does not start task timers
+      if (willStart && currentUser.role === 'SUPER_ADMIN') {
+        return prev;
+      }
+
+      // If timer is being stopped by Super Admin / another user, notify the assignee
+      if (!willStart && currentUser.id !== targetTask.assigneeId) {
+        addNotification({
+          userId: targetTask.assigneeId,
+          title: 'Task Timer Stopped by Super Admin',
+          message: `${currentUser.name} (${currentUser.role.replace('_', ' ')}) has stopped your running timer for task "${targetTask.title}".`,
+          type: 'SYSTEM',
+          linkUrl: '/tasks'
+        });
+      }
+
+      return prev.map(t => {
         if (t.id === taskId) {
-          const isRunning = !t.isTimerRunning;
           let updatedWorklogs = [...t.worklogs];
           let updatedLoggedHours = t.loggedHours;
 
-          if (!isRunning && t.activeTimerStart) {
+          if (!willStart && t.activeTimerStart) {
             const durationSec = Math.max(1, Math.round((Date.now() - new Date(t.activeTimerStart).getTime()) / 1000));
             const hoursAdded = durationSec / 3600;
             updatedLoggedHours = parseFloat((t.loggedHours + hoursAdded).toFixed(2));
@@ -529,19 +719,20 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
               id: `wl-${Date.now()}`,
               userId: currentUser.id,
               userName: isStoppedByOther ? `${currentUser.name} (${currentUser.role.replace('_', ' ')})` : currentUser.name,
+              date: todayStr,
               startTime: new Date(t.activeTimerStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               endTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
               durationSeconds: durationSec,
-              notes: isStoppedByOther ? `Timer stopped by ${currentUser.name}` : 'Live timer work session'
+              notes: isStoppedByOther ? `Timer stopped by ${currentUser.name} (${currentUser.role.replace('_', ' ')})` : 'Live task work session'
             });
           }
 
           const updated = {
             ...t,
-            isTimerRunning: isRunning,
-            activeTimerStart: isRunning ? new Date().toISOString() : undefined,
+            isTimerRunning: willStart,
+            activeTimerStart: willStart ? new Date().toISOString() : undefined,
             loggedHours: updatedLoggedHours,
-            status: (isRunning ? 'IN_PROGRESS' : t.status) as Task['status'],
+            status: (willStart ? 'IN_PROGRESS' : t.status) as Task['status'],
             worklogs: updatedWorklogs
           };
 
@@ -555,9 +746,45 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
 
           return updated;
         }
-        return { ...t, isTimerRunning: false, activeTimerStart: undefined };
-      })
-    );
+
+        // If another task was running and we are starting this one, stop that other task
+        if (willStart && t.isTimerRunning && t.activeTimerStart) {
+          const durationSec = Math.max(1, Math.round((Date.now() - new Date(t.activeTimerStart).getTime()) / 1000));
+          const hoursAdded = durationSec / 3600;
+          const updatedLoggedHours = parseFloat((t.loggedHours + hoursAdded).toFixed(2));
+          const updatedWorklogs = [
+            {
+              id: `wl-${Date.now()}`,
+              userId: currentUser.id,
+              userName: currentUser.name,
+              date: todayStr,
+              startTime: new Date(t.activeTimerStart).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              endTime: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+              durationSeconds: durationSec,
+              notes: 'Timer auto-switched to new task'
+            },
+            ...t.worklogs
+          ];
+
+          persist(`/api/tasks/${t.id}`, 'PATCH', {
+            isTimerRunning: false,
+            activeTimerStart: null,
+            loggedHours: updatedLoggedHours,
+            worklogsJson: JSON.stringify(updatedWorklogs)
+          });
+
+          return {
+            ...t,
+            isTimerRunning: false,
+            activeTimerStart: undefined,
+            loggedHours: updatedLoggedHours,
+            worklogs: updatedWorklogs
+          };
+        }
+
+        return t;
+      });
+    });
   }, [currentUser]);
 
   // ── Task Actions ───────────────────────────────────────────────────────────
@@ -819,17 +1046,36 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     persist(`/api/leaves/${leaveId}`, 'DELETE');
   }, []);
 
-  const addPaidLeaveCredit = useCallback((userIds: string[], days: number, reason: string) => {
+  const addPaidLeaveCredit = useCallback((userIds: string[], days: number, reason: string, validFrom?: string, validTo?: string) => {
+    if (!currentUser) return;
+    const nowIso = new Date().toISOString();
+    const newEntries: PaidLeaveCredit[] = userIds.map(uid => {
+      const u = users.find(x => x.id === uid);
+      return {
+        id: `plc-${Date.now()}-${uid}`,
+        userId: uid,
+        userName: u?.name || uid,
+        days: Number(days),
+        reason,
+        validFrom,
+        validTo,
+        creditedBy: `${currentUser.name} (${currentUser.role.replace('_', ' ')})`,
+        creditedAt: nowIso
+      };
+    });
+
+    setPaidLeaveCredits(prev => [...newEntries, ...prev]);
+
     setUsers(prev =>
       prev.map(u => {
         if (userIds.includes(u.id)) {
-          const newBalance = { ...u.leaveBalance, paid: u.leaveBalance.paid + days };
+          const newBalance = { ...u.leaveBalance, paid: (u.leaveBalance?.paid || 0) + Number(days) };
           persist(`/api/users/${u.id}`, 'PATCH', { leaveBalanceJson: JSON.stringify(newBalance) });
           
           addNotification({
             userId: u.id,
             title: `Paid Leave Credited (+${days} Days)`,
-            message: `${days} paid leave day(s) credited to your account. Reason: ${reason}`,
+            message: `${days} paid leave day(s) credited to your account by ${currentUser.name}. Reason: ${reason}`,
             type: 'INFO',
             linkUrl: '/leaves'
           });
@@ -839,7 +1085,50 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         return u;
       })
     );
-  }, [addNotification]);
+  }, [currentUser, users, addNotification]);
+
+  const editPaidLeaveCredit = useCallback((creditId: string, updatedData: { days: number; reason: string; validFrom?: string; validTo?: string }) => {
+    setPaidLeaveCredits(prev => {
+      const target = prev.find(c => c.id === creditId);
+      if (!target) return prev;
+      const daysDiff = Number(updatedData.days) - target.days;
+
+      if (daysDiff !== 0) {
+        setUsers(uPrev =>
+          uPrev.map(u => {
+            if (u.id === target.userId) {
+              const newBalance = { ...u.leaveBalance, paid: Math.max(0, (u.leaveBalance?.paid || 0) + daysDiff) };
+              persist(`/api/users/${u.id}`, 'PATCH', { leaveBalanceJson: JSON.stringify(newBalance) });
+              return { ...u, leaveBalance: newBalance };
+            }
+            return u;
+          })
+        );
+      }
+
+      return prev.map(c => (c.id === creditId ? { ...c, ...updatedData, days: Number(updatedData.days) } : c));
+    });
+  }, []);
+
+  const deletePaidLeaveCredit = useCallback((creditId: string) => {
+    setPaidLeaveCredits(prev => {
+      const target = prev.find(c => c.id === creditId);
+      if (!target) return prev;
+
+      setUsers(uPrev =>
+        uPrev.map(u => {
+          if (u.id === target.userId) {
+            const newBalance = { ...u.leaveBalance, paid: Math.max(0, (u.leaveBalance?.paid || 0) - target.days) };
+            persist(`/api/users/${u.id}`, 'PATCH', { leaveBalanceJson: JSON.stringify(newBalance) });
+            return { ...u, leaveBalance: newBalance };
+          }
+          return u;
+        })
+      );
+
+      return prev.filter(c => c.id !== creditId);
+    });
+  }, []);
 
   const submitCompOff = useCallback((requestData: Omit<CompOffRequest, 'id' | 'requestedOn' | 'status' | 'userId' | 'userName'> & { userId?: string; userName?: string; convertedDays?: number; status?: 'PENDING' | 'APPROVED_BY_TL' | 'APPROVED' | 'REJECTED' }) => {
     if (!currentUser) return;
@@ -897,7 +1186,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
             setUsers(uPrev =>
               uPrev.map(u => {
                 if (u.id === co.userId) {
-                  const newBalance = { ...u.leaveBalance, compOff: u.leaveBalance.compOff + co.convertedDays };
+                  const newBalance = { ...u.leaveBalance, compOff: (u.leaveBalance?.compOff || 0) + co.convertedDays };
                   persist(`/api/users/${u.id}`, 'PATCH', { leaveBalanceJson: JSON.stringify(newBalance) });
                   return { ...u, leaveBalance: newBalance };
                 }
@@ -924,6 +1213,56 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
       })
     );
   }, [currentUser, addNotification]);
+
+  const editCompOff = useCallback((compOffId: string, updatedData: Partial<CompOffRequest>) => {
+    setCompOffRequests(prev => {
+      const target = prev.find(c => c.id === compOffId);
+      if (!target) return prev;
+
+      const updated = { ...target, ...updatedData };
+      if (updatedData.convertedDays !== undefined && target.status === 'APPROVED') {
+        const daysDiff = Number(updatedData.convertedDays) - target.convertedDays;
+        if (daysDiff !== 0) {
+          setUsers(uPrev =>
+            uPrev.map(u => {
+              if (u.id === target.userId) {
+                const newBalance = { ...u.leaveBalance, compOff: Math.max(0, (u.leaveBalance?.compOff || 0) + daysDiff) };
+                persist(`/api/users/${u.id}`, 'PATCH', { leaveBalanceJson: JSON.stringify(newBalance) });
+                return { ...u, leaveBalance: newBalance };
+              }
+              return u;
+            })
+          );
+        }
+      }
+
+      persist(`/api/comp-off/${compOffId}`, 'PATCH', updatedData);
+      return prev.map(c => (c.id === compOffId ? updated : c));
+    });
+  }, []);
+
+  const deleteCompOff = useCallback((compOffId: string) => {
+    setCompOffRequests(prev => {
+      const target = prev.find(c => c.id === compOffId);
+      if (!target) return prev;
+
+      if (target.status === 'APPROVED') {
+        setUsers(uPrev =>
+          uPrev.map(u => {
+            if (u.id === target.userId) {
+              const newBalance = { ...u.leaveBalance, compOff: Math.max(0, (u.leaveBalance?.compOff || 0) - target.convertedDays) };
+              persist(`/api/users/${u.id}`, 'PATCH', { leaveBalanceJson: JSON.stringify(newBalance) });
+              return { ...u, leaveBalance: newBalance };
+            }
+            return u;
+          })
+        );
+      }
+
+      persist(`/api/comp-off/${compOffId}`, 'DELETE');
+      return prev.filter(c => c.id !== compOffId);
+    });
+  }, []);
 
   // ── Admin / Master Actions ─────────────────────────────────────────────────
   const updateSystemSettings = useCallback((newSettings: Partial<SystemSettings>) => {
@@ -1112,6 +1451,7 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
     setUsers(prev => prev.map(u => u.id === userId ? { ...u, ...data } : u));
     // Build the API payload
     const payload: Record<string, unknown> = {};
+    if (data.email !== undefined) payload.email = data.email;
     if (data.name !== undefined) payload.name = data.name;
     if (data.title !== undefined) payload.title = data.title;
     if (data.role !== undefined) payload.role = data.role;
@@ -1503,9 +1843,14 @@ export const SystemProvider: React.FC<{ children: React.ReactNode }> = ({ childr
         reviewLeave,
         softDeleteLeave,
         hardDeleteLeave,
+        paidLeaveCredits,
         addPaidLeaveCredit,
+        editPaidLeaveCredit,
+        deletePaidLeaveCredit,
         submitCompOff,
         reviewCompOff,
+        editCompOff,
+        deleteCompOff,
         addLeaveRule,
         updateSystemSettings,
         addProjectType,

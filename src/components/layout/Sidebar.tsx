@@ -61,8 +61,8 @@ export const Sidebar: React.FC = () => {
     
     // Default fallback based on system roles if no custom role
     if (item.key === 'admin' && currentUser.role !== 'ADMIN_HR') return false;
+    if (item.key === 'teams' && currentUser.role === 'EMPLOYEE') return false;
     if (item.key === 'projects' && currentUser.role === 'EMPLOYEE') return false;
-    if (item.key === 'reports' && currentUser.role === 'EMPLOYEE') return false;
     if (item.key === 'payslips' && currentUser.role === 'EMPLOYEE') return false;
     
     return true;

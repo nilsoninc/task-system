@@ -97,8 +97,6 @@ export default function PayslipsPage() {
   const [configForm, setConfigForm] = useState<PayslipConfig>(() => normalizePayslipConfig(payslipConfig));
   const [configSuccessMsg, setConfigSuccessMsg] = useState<string>('');
 
-  if (!currentUser) return null;
-
   // Save Payslip Configuration
   const handleSaveConfig = (e: React.FormEvent) => {
     e.preventDefault();
@@ -146,6 +144,7 @@ export default function PayslipsPage() {
 
   // Filtered Payslips List
   const displayedPayslips = useMemo(() => {
+    if (!currentUser) return [];
     return payslips.filter((p) => {
       // Role scope: Regular employee only sees their own
       if (!isAdminOrHR && p.userId !== currentUser.id) {
@@ -179,10 +178,12 @@ export default function PayslipsPage() {
 
       return true;
     });
-  }, [payslips, isAdminOrHR, currentUser.id, filterEmployeeId, searchEmployee, filterMonth, filterYear]);
+  }, [payslips, isAdminOrHR, currentUser, filterEmployeeId, searchEmployee, filterMonth, filterYear]);
 
   // First user preview payslip
   const previewItem = previewPayslips[0] || null;
+
+  if (!currentUser) return null;
 
   return (
     <div className="space-y-6">
