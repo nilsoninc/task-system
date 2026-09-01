@@ -2,7 +2,7 @@
 
 import React, { useState } from 'react';
 import { useSystem } from '@/context/SystemContext';
-import { formatTime, formatHoursDecimal, formatDate } from '@/lib/utils';
+import { formatTime, formatHoursDecimal, formatDate, formatDurationHuman, getTaskTotalSeconds } from '@/lib/utils';
 import Link from 'next/link';
 import {
   Clock,
@@ -399,6 +399,9 @@ export default function DashboardPage() {
                   const project = projects.find((p) => p.id === t.projectId);
                   const isExceeded = t.loggedHours > t.estimatedHours;
                   const isTimerRunning = Boolean(t.isTimerRunning);
+                  const isAnotherRunning = Boolean(runningTask && runningTask.id !== t.id);
+                  const isStartDisabled = Boolean(runningTask);
+                  const totalTaskSecs = getTaskTotalSeconds(t);
 
                   return (
                     <div
@@ -454,12 +457,15 @@ export default function DashboardPage() {
 
                       <div className="flex items-center space-x-3">
                         <div className="text-right">
-                          <span className="text-[10px] text-zinc-400 uppercase font-bold block">Logged Time</span>
+                          <span className="text-[9px] text-zinc-400 uppercase font-bold tracking-wider block">Total Time Taken</span>
                           <span
-                            className={`text-xs font-mono font-bold ${
-                              isExceeded ? 'text-rose-600' : 'text-zinc-800'
+                            className={`text-xs font-mono font-black block ${
+                              isExceeded ? 'text-rose-600' : isTimerRunning ? 'text-brand-600 animate-pulse' : 'text-zinc-900'
                             }`}
                           >
+                            {formatDurationHuman(totalTaskSecs)}
+                          </span>
+                          <span className="text-[10px] text-zinc-400 font-mono block mt-0.5">
                             {formatHoursDecimal(t.loggedHours)} / {t.estimatedHours}h
                           </span>
                         </div>
@@ -485,8 +491,13 @@ export default function DashboardPage() {
                           ) : t.status !== 'COMPLETED' ? (
                             <button
                               onClick={() => toggleTaskTimer(t.id)}
-                              className="px-3 py-1.5 bg-brand-500 hover:bg-brand-600 text-white rounded-xl text-xs font-bold flex items-center space-x-1 shadow-sm cursor-pointer"
-                              title="Start Task Timer"
+                              disabled={isStartDisabled}
+                              className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1 transition-all ${
+                                isStartDisabled
+                                  ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed border border-zinc-200 opacity-60'
+                                  : 'bg-brand-500 hover:bg-brand-600 text-white shadow-sm cursor-pointer'
+                              }`}
+                              title={isStartDisabled ? 'Another task timer is already running. Stop it first.' : 'Start Task Timer'}
                             >
                               <Play className="w-3.5 h-3.5 fill-current" />
                               <span>Start</span>
@@ -746,7 +757,7 @@ export default function DashboardPage() {
                       <tr>
                         <th className="p-3">Task Title</th>
                         <th className="p-3">Project</th>
-                        <th className="p-3">Logged Total</th>
+                        <th className="p-3">Total Time Taken</th>
                         <th className="p-3">Status</th>
                         <th className="p-3">Action</th>
                       </tr>
@@ -758,7 +769,10 @@ export default function DashboardPage() {
                           <tr key={t.id} className="hover:bg-zinc-50">
                             <td className="p-3 font-bold text-zinc-900">{t.title}</td>
                             <td className="p-3 text-zinc-600">{project?.name || 'General'}</td>
-                            <td className="p-3 font-mono font-bold text-brand-600">{formatHoursDecimal(t.loggedHours)} hrs</td>
+                            <td className="p-3 font-mono">
+                              <span className="font-bold text-brand-600 block">{formatDurationHuman(getTaskTotalSeconds(t))}</span>
+                              <span className="text-[10px] text-zinc-400 block">{formatHoursDecimal(t.loggedHours)} hrs</span>
+                            </td>
                             <td className="p-3">
                               <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
                                 t.isTimerRunning ? 'bg-brand-500 text-white animate-pulse' : 'bg-zinc-100 text-zinc-700'
@@ -994,7 +1008,9 @@ export default function DashboardPage() {
                           {project?.name || 'General Project'}
                         </span>
                         <h4 className="text-xs font-bold text-zinc-900 mt-1">{t.title}</h4>
-                        <p className="text-[10px] text-zinc-500">Due: {formatDate(t.dueDate)} • Est: {t.estimatedHours}h • Logged: {formatHoursDecimal(t.loggedHours)}h</p>
+                        <p className="text-[10px] text-zinc-500">
+                          Due: {formatDate(t.dueDate)} • Est: {t.estimatedHours}h • Time Taken: {formatDurationHuman(getTaskTotalSeconds(t))} ({formatHoursDecimal(t.loggedHours)} hrs)
+                        </p>
                       </div>
 
                       <button

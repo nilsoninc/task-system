@@ -65,3 +65,24 @@ export function calculateDateDiffDays(startDate: string, endDate: string): numbe
   const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
   return diffDays;
 }
+
+export function formatDurationHuman(seconds?: number): string {
+  if (!seconds || seconds <= 0) return '0h 00m 00s';
+  const hrs = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
+  const secs = Math.floor(seconds % 60);
+  return `${hrs}h ${mins.toString().padStart(2, '0')}m ${secs.toString().padStart(2, '0')}s`;
+}
+
+export function getTaskTotalSeconds(task?: { worklogs?: { durationSeconds?: number }[]; isTimerRunning?: boolean; activeTimerStart?: string; loggedHours?: number } | null): number {
+  if (!task) return 0;
+  const worklogSecs = (task.worklogs || []).reduce((acc, wl) => acc + (wl.durationSeconds || 0), 0);
+  let liveSecs = 0;
+  if (task.isTimerRunning && task.activeTimerStart) {
+    liveSecs = Math.max(0, Math.round((Date.now() - new Date(task.activeTimerStart).getTime()) / 1000));
+  }
+  const total = worklogSecs + liveSecs;
+  if (total > 0) return total;
+  return Math.round((task.loggedHours || 0) * 3600);
+}
+

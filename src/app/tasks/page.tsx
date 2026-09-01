@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useSystem } from '@/context/SystemContext';
 import { Task, TaskPriority, TaskStatus, TaskAttachment } from '@/lib/types';
-import { formatHoursDecimal, formatDate } from '@/lib/utils';
+import { formatHoursDecimal, formatDate, formatDurationHuman, getTaskTotalSeconds } from '@/lib/utils';
 import { SearchableSelect } from '@/components/common/SearchableSelect';
 import { TaskDetailsModal } from '@/components/modals/TaskDetailsModal';
 import { TaskEditModal } from '@/components/modals/TaskEditModal';
@@ -452,8 +452,10 @@ export default function TasksPage() {
                       const isDueToday = t.status !== 'COMPLETED' && t.dueDate === todayStr;
                       const isExceeded = t.loggedHours > t.estimatedHours;
                       const isThisRunning = Boolean(t.isTimerRunning);
-                      const isAnotherRunning = runningTaskId && runningTaskId !== t.id;
+                      const isAnotherRunning = Boolean(runningTaskId && runningTaskId !== t.id);
+                      const isStartDisabled = Boolean(runningTaskId);
                       const isCompleted = t.status === 'COMPLETED';
+                      const totalTaskSecs = getTaskTotalSeconds(t);
 
                       return (
                         <div
@@ -523,14 +525,25 @@ export default function TasksPage() {
                             </div>
                           )}
 
-                          {/* Footer Info: Logged Time & START/STOP Button & View Log */}
-                          <div className="pt-2 border-t border-zinc-100 flex items-center justify-between text-xs">
+                          {/* Footer Info: Total Time Taken & START/STOP Button & View Log */}
+                          <div className="pt-2.5 border-t border-zinc-100 flex items-center justify-between text-xs">
                             <div className="text-left">
+                              <span className="text-[9px] font-bold text-zinc-400 uppercase tracking-wider block">
+                                Total Time Taken
+                              </span>
                               <span
-                                className={`text-[10px] font-mono font-bold ${
-                                  isExceeded ? 'text-rose-600' : 'text-zinc-700'
+                                className={`text-xs font-mono font-black flex items-center gap-1 ${
+                                  isExceeded
+                                    ? 'text-rose-600'
+                                    : isThisRunning
+                                    ? 'text-brand-600 animate-pulse'
+                                    : 'text-zinc-900'
                                 }`}
                               >
+                                <Clock className="w-3 h-3 text-brand-500 flex-shrink-0" />
+                                {formatDurationHuman(totalTaskSecs)}
+                              </span>
+                              <span className="text-[10px] font-mono text-zinc-400 block mt-0.5">
                                 {formatHoursDecimal(t.loggedHours)} / {t.estimatedHours}h
                               </span>
                             </div>
@@ -558,13 +571,13 @@ export default function TasksPage() {
                               ) : !isCompleted && !isSuperAdmin ? (
                                 <button
                                   onClick={(e) => handleStartStopClick(t.id, e)}
-                                  disabled={Boolean(isAnotherRunning)}
-                                  className={`px-2.5 py-1 rounded-lg text-white font-bold text-[10px] flex items-center space-x-1 transition-all ${
-                                    isAnotherRunning
-                                      ? 'bg-zinc-300 text-zinc-500 cursor-not-allowed'
-                                      : 'bg-brand-500 hover:bg-brand-600 shadow-sm cursor-pointer'
+                                  disabled={isStartDisabled}
+                                  className={`px-2.5 py-1 rounded-lg font-bold text-[10px] flex items-center space-x-1 transition-all ${
+                                    isStartDisabled
+                                      ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed border border-zinc-200 opacity-60'
+                                      : 'bg-brand-500 hover:bg-brand-600 text-white shadow-sm cursor-pointer'
                                   }`}
-                                  title={isAnotherRunning ? 'Another task timer is active. Stop it first.' : 'Start Timer'}
+                                  title={isStartDisabled ? 'Another task timer is already running. Stop it first.' : 'Start Timer'}
                                 >
                                   <Play className="w-3 h-3 fill-current" />
                                   <span>Start</span>
@@ -594,7 +607,7 @@ export default function TasksPage() {
                 <th className="p-3">Priority</th>
                 <th className="p-3">Dates</th>
                 <th className="p-3">Status</th>
-                <th className="p-3">Logged / Est</th>
+                <th className="p-3">Total Time Taken</th>
                 <th className="p-3 text-right">Actions & Timer</th>
               </tr>
             </thead>
@@ -613,8 +626,10 @@ export default function TasksPage() {
                   const isOverdue = t.status !== 'COMPLETED' && t.dueDate < todayStr;
                   const isExceeded = t.loggedHours > t.estimatedHours;
                   const isThisRunning = Boolean(t.isTimerRunning);
-                  const isAnotherRunning = runningTaskId && runningTaskId !== t.id;
+                  const isAnotherRunning = Boolean(runningTaskId && runningTaskId !== t.id);
+                  const isStartDisabled = Boolean(runningTaskId);
                   const isCompleted = t.status === 'COMPLETED';
+                  const totalTaskSecs = getTaskTotalSeconds(t);
 
                   return (
                     <tr
@@ -694,9 +709,19 @@ export default function TasksPage() {
                       </td>
 
                       <td className="p-3 whitespace-nowrap font-mono">
-                        <span className={`font-bold ${isExceeded ? 'text-rose-600' : 'text-zinc-800'}`}>
-                          {formatHoursDecimal(t.loggedHours)} / {t.estimatedHours}h
-                        </span>
+                        <div className="flex items-center space-x-1.5">
+                          <Clock className="w-3.5 h-3.5 text-brand-500 flex-shrink-0" />
+                          <div>
+                            <span className={`font-black text-xs block ${
+                              isExceeded ? 'text-rose-600' : isThisRunning ? 'text-brand-600 animate-pulse' : 'text-zinc-900'
+                            }`}>
+                              {formatDurationHuman(totalTaskSecs)}
+                            </span>
+                            <span className="text-[10px] text-zinc-400 block mt-0.5">
+                              {formatHoursDecimal(t.loggedHours)} / {t.estimatedHours}h
+                            </span>
+                          </div>
+                        </div>
                       </td>
 
                       <td className="p-3 text-right whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
@@ -723,13 +748,13 @@ export default function TasksPage() {
                           ) : !isCompleted && !isSuperAdmin ? (
                             <button
                               onClick={(e) => handleStartStopClick(t.id, e)}
-                              disabled={Boolean(isAnotherRunning)}
+                              disabled={isStartDisabled}
                               className={`px-3 py-1 rounded-lg text-xs font-bold flex items-center space-x-1 transition-all ${
-                                isAnotherRunning
-                                  ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed'
+                                isStartDisabled
+                                  ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed border border-zinc-200 opacity-60'
                                   : 'bg-brand-500 hover:bg-brand-600 text-white shadow-sm cursor-pointer'
                               }`}
-                              title={isAnotherRunning ? 'Another task timer is active. Stop it first.' : 'Start Timer'}
+                              title={isStartDisabled ? 'Another task timer is already running. Stop it first.' : 'Start Timer'}
                             >
                               <Play className="w-3.5 h-3.5 fill-current" />
                               <span>Start</span>

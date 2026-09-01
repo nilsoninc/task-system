@@ -3,7 +3,7 @@
 import React, { useState } from 'react';
 import { useSystem } from '@/context/SystemContext';
 import { Task, TaskStatus } from '@/lib/types';
-import { formatHoursDecimal, formatDate } from '@/lib/utils';
+import { formatHoursDecimal, formatDate, formatDurationHuman, getTaskTotalSeconds } from '@/lib/utils';
 import {
   X,
   Clock,
@@ -38,6 +38,7 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
   const {
     currentUser,
     users,
+    tasks,
     projects,
     taskTypes,
     toggleTaskTimer,
@@ -91,6 +92,11 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
     setReminderSent(true);
     setTimeout(() => setReminderSent(false), 3000);
   };
+
+  const runningTaskId = tasks.find(t => t.isTimerRunning)?.id;
+  const isAnotherRunning = Boolean(runningTaskId && runningTaskId !== task.id);
+  const isStartDisabled = Boolean(runningTaskId);
+  const totalTaskSecs = getTaskTotalSeconds(task);
 
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-sm z-50 flex items-center justify-end animate-in fade-in">
@@ -179,8 +185,11 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
               </div>
 
               <div className="text-right">
-                <span className="text-[10px] uppercase font-bold tracking-wider opacity-70 block">Total Logged</span>
-                <span className={`text-base font-black font-mono ${isExceeded ? 'text-rose-700' : 'text-emerald-700'}`}>
+                <span className="text-[10px] uppercase font-bold tracking-wider opacity-70 block">Total Time Taken</span>
+                <span className={`text-base font-black font-mono block ${isExceeded ? 'text-rose-700' : 'text-emerald-700'}`}>
+                  {formatDurationHuman(totalTaskSecs)}
+                </span>
+                <span className="text-[10px] font-mono opacity-80 block mt-0.5">
                   {formatHoursDecimal(totalLoggedHours)} / {estimatedHours}h
                 </span>
               </div>
@@ -197,8 +206,8 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
             </div>
           </div>
 
-          {/* Active Live Timer Controller */}
-          {task.isTimerRunning && (
+          {/* Active Live Timer Controller / Start Timer */}
+          {task.isTimerRunning ? (
             <div className="p-3.5 bg-gradient-to-r from-brand-500 to-brand-600 text-white rounded-2xl shadow-glow-orange flex items-center justify-between animate-pulse">
               <div className="flex items-center space-x-2.5">
                 <Clock className="w-5 h-5 animate-spin" />
@@ -217,7 +226,32 @@ export const TaskDetailsModal: React.FC<TaskDetailsModalProps> = ({
                 <span>Stop Timer</span>
               </button>
             </div>
-          )}
+          ) : !isCompleted && !isSuperAdmin ? (
+            <div className="p-3.5 bg-zinc-50 border border-zinc-200 rounded-2xl flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <Clock className="w-5 h-5 text-brand-500" />
+                <div>
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-zinc-400">Live Worklog Timer</span>
+                  <p className="text-xs font-bold text-zinc-800">
+                    {isStartDisabled ? 'Another task timer is already active. Stop it first to start this task.' : 'Ready to start live work session'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => toggleTaskTimer(task.id)}
+                disabled={isStartDisabled}
+                className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition-all ${
+                  isStartDisabled
+                    ? 'bg-zinc-200 text-zinc-400 cursor-not-allowed border border-zinc-200 opacity-60'
+                    : 'bg-brand-500 hover:bg-brand-600 text-white shadow-sm cursor-pointer'
+                }`}
+                title={isStartDisabled ? 'Another task timer is already running. Stop it first.' : 'Start Timer'}
+              >
+                <Play className="w-3.5 h-3.5 fill-current" />
+                <span>Start Timer</span>
+              </button>
+            </div>
+          ) : null}
 
           {/* Priority & Deadline Notification */}
           {(task.priority === 'URGENT' || task.priority === 'HIGH' || isOverdue) && (
